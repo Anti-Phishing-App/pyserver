@@ -20,6 +20,11 @@ import grpc  # AioRpcError 등 사용
 #  NestService용 클라이언트
 from clova_grpc_client import ClovaSpeechClient
 
+# OCR 실행 및 키워드 검출
+from ocr_run import run_ocr
+from detect_keywords import detect_keywords
+from ocr_result import ocr_results_cache # OCR 결과를 저장할 캐시
+
 # --- 환경 변수 로드 ---
 load_dotenv()
 
@@ -142,6 +147,51 @@ async def upload_images(files: List[UploadFile] = File(...)):
         saved = _save_uploadfile(f)
         results.append({"filename": saved, "url": f"/uploads/{saved}"})
     return JSONResponse({"files": results})
+
+
+# =====================================================================================
+# OCR 및 키워드 분석
+# =====================================================================================
+class ImageAnalysisRequest(BaseModel):
+    filename: str
+
+@app.post("/call-ocr")
+async def call_ocr(request: ImageAnalysisRequest):
+    """
+    서버에 저장된 이미지 파일(`filename`)로 OCR 실행, 결과를 ocr_results_cache에 저장
+    """
+    filename = request.filename
+    image_path = UPLOAD_DIR / filename
+    
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail=f"'{filename}' 파일을 찾을 수 없습니다.")
+
+    # OCR 실행
+    ocr_result = run_ocr(str(image_path))
+    if ocr_result.get("error"):
+        raise HTTPException(status_code=500, detail=f"OCR 실패: {ocr_result.get('message')}")
+
+    # OCR 결과 캐시에 저장
+    ocr_results_cache[filename] = ocr_result
+    
+    return {"status": "success", "message": f"'{filename}'에 대한 OCR 완료 및 결과 저장 성공"}
+
+@app.post("/detect-phishing-keywords")
+async def detect_phishing_keywords(request: ImageAnalysisRequest):
+    """
+    ocr_results_cache에 저장된 OCR 결과를 사용, 키워드 분석
+    """
+    filename = request.filename
+    if filename not in ocr_results_cache:
+        raise HTTPException(status_code=404, detail=f"'{filename}'에 대한 OCR 결과가 캐시에 없습니다. /run-ocr를 먼저 호출하세요.")
+
+    # 캐시에서 결과 가져오기
+    ocr_result = ocr_results_cache[filename]
+
+    # 키워드 분석
+    analysis_result = detect_keywords(ocr_result)
+    
+    return analysis_result
 
 # =====================================================================================
 # 저장된 녹음 파일 인식 (CLOVA Speech REST - 필요 시 유지)
