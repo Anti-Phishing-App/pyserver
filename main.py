@@ -83,8 +83,7 @@ MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 # CLOVA Speech API 설정
 # =========================
 CLOVA_INVOKE_URL = os.getenv("CLOVA_INVOKE_URL")
-CLOVA_SECRET_KEY = os.getenv("CLOVA_SECRET_KEY")  # ✅ Nest에서는 이 값만 쓰면 됨
-# 아래 두 개는 Nest 경로에서는 사용하지 않음(남겨도 무방)
+CLOVA_SECRET_KEY = os.getenv("CLOVA_SECRET_KEY")
 CLOVA_CLIENT_ID = os.getenv("CLOVA_CLIENT_ID")
 CLOVA_CLIENT_SECRET = os.getenv("CLOVA_CLIENT_SECRET")
 
@@ -221,138 +220,87 @@ async def transcribe_status(token: str):
 # =====================================================================================
 @app.websocket("/ws/transcribe/stream")
 async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR"):
-    """
-    브라우저에서 16k PCM(S16LE) 바이너리를 100ms 배치로 보내면,
-    여기서 gRPC(NestService)에 흘려보내고, 결과 텍스트를 WebSocket JSON으로 되돌려준다.
-
-    - 인증: Authorization: Bearer <CLOVA_SECRET_KEY>
-    - CONFIG: transcription.language + semanticEpd 완화(문장 끊김 최소화)
-    - 오류/정리: WebSocket 끊김, gRPC 예외, 작업 취소 모두 안전 처리
-    """
     await websocket.accept()
 
-    # ---- 준비물 ----
     grpc_client: ClovaSpeechClient | None = None
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
     response_task: asyncio.Task | None = None
 
     try:
-        # 0) 환경변수 체크
         if not CLOVA_SECRET_KEY:
             raise RuntimeError("CLOVA_SECRET_KEY 환경변수가 필요합니다.")
 
-        # 1) gRPC 클라이언트 생성 (NestService)
-        #    ClovaSpeechClient(secret_key=...) 는 Authorization: Bearer ... 헤더를 붙여준다.
         grpc_client = ClovaSpeechClient(secret_key=CLOVA_SECRET_KEY)
+        lang_short = (lang or "ko-KR").split("-")[0].lower()
 
-        # 2) CONFIG JSON 구성
-        #    자바 예제와 같은 camelCase 구조 + 끊김 완화를 위한 semanticEpd 옵션 권장값
-        lang_short = (lang or "ko-KR").split("-")[0].lower()  # "ko-KR" -> "ko"
-        config_json = (
-            '{'
-            f'"transcription":{{"language":"{lang_short}"}},'
-            '"semanticEpd":{"skipEmptyText":true,"useWordEpd":false,"usePeriodEpd":true}'
-            '}'
-        )
+        config_dict = {
+            "transcription": {
+                "language": lang_short
+            },
+            "semanticEpd": {
+                "skipEmptyText": True,
+                "useWordEpd": False,
+                "usePeriodEpd": True,
+                #"gapThreshold": 1500
+            }
+        }
+        config_json = json.dumps(config_dict, ensure_ascii=False)
 
-        # 3) gRPC 응답 → WebSocket으로 릴레이
         async def response_handler():
             try:
-                # grpc_client.recognize(...) 는 서버에서 오는 스트림을 async generator로 내준다.
                 async for response in grpc_client.recognize(
                     audio_queue,
                     config_json=config_json,
                     language=lang,
                 ):
-                    # NestService는 contents 문자열(JSON)을 내보냄
                     contents = getattr(response, "contents", "")
                     if not contents:
                         continue
-
                     try:
                         payload = json.loads(contents)
-
-                        # 보통 {"transcription":{"text":"...", "final":true/false}} 형태
-                        if isinstance(payload, dict):
-                            tr = payload.get("transcription")
-                            if isinstance(tr, dict) and "text" in tr:
-                                await websocket.send_json({
-                                    "text": tr.get("text", ""),
-                                    "is_final": bool(tr.get("final", False)),
-                                })
-                                continue
-
-                            # 혹시 평면 구조로 내려오면 이것도 수용
-                            if "text" in payload:
-                                await websocket.send_json({
-                                    "text": payload.get("text", ""),
-                                    "is_final": bool(payload.get("is_final", False)),
-                                })
-                                continue
-
-                        # 모르는 형식은 디버그로 그대로 전송 (개발 중 로그 확인용)
-                        await websocket.send_json({"debug": contents})
+                        tr = payload.get("transcription")
+                        
+                        # `position`을 포함한 transcription 객체 전체를 프론트엔드로 전달합니다.
+                        if isinstance(tr, dict) and "text" in tr:
+                            await websocket.send_json(tr)
+                            
                     except Exception:
-                        # JSON 파싱 실패 시에도 원문을 디버그로
                         await websocket.send_json({"debug": contents})
 
             except grpc.aio.AioRpcError as e:
-                # gRPC 레벨 오류(인증/포맷/메서드 경로 등)
                 msg = f"gRPC Error: {e.details()} (code: {e.code().name})"
                 print(msg)
-                try:
-                    await websocket.send_json({"error": msg})
-                except Exception:
-                    pass
+                try: await websocket.send_json({"error": msg})
+                except Exception: pass
             except Exception as e:
-                # 기타 예외
                 print(f"Response handler error: {e}")
-                try:
-                    await websocket.send_json({"error": f"{e}"})
-                except Exception:
-                    pass
+                try: await websocket.send_json({"error": f"{e}"})
+                except Exception: pass
 
-        # 응답 태스크 가동
         response_task = asyncio.create_task(response_handler())
 
-        # 4) WebSocket 수신 루프: 바이너리 오디오 → gRPC 쪽 큐로 전달
-        #    (프론트에서 100ms 배치로 보내오므로 여기선 그대로 큐잉만)
         while True:
             message = await websocket.receive()
             if "bytes" in message and message["bytes"]:
                 await audio_queue.put(message["bytes"])
-            # 텍스트 메시지나 ping/pong 등은 무시
-            # 필요하면 "stop" 같은 제어 텍스트를 정의해서 종료 신호로 쓸 수 있다.
 
     except WebSocketDisconnect:
-        # 브라우저가 정상 종료한 경우
-        await audio_queue.put(None)  # gRPC 스트림 종료 신호
         print("WebSocket disconnected.")
     except Exception as e:
-        # 예외를 프론트로 알려주고 종료
         print(f"WS handler error: {e}")
-        try:
-            await websocket.send_json({"error": str(e)})
-        except Exception:
-            pass
+        try: await websocket.send_json({"error": str(e)})
+        except Exception: pass
     finally:
-        # 5) 정리: gRPC 요청 종료 → 응답 태스크 취소 → 채널 닫기
-        try:
-            await audio_queue.put(None)  # 여러 번 넣어도 안전
-        except Exception:
-            pass
+        try: await audio_queue.put(None)
+        except Exception: pass
 
         if response_task and not response_task.done():
             response_task.cancel()
-            try:
-                await response_task
-            except asyncio.CancelledError:
-                pass
+            try: await response_task
+            except asyncio.CancelledError: pass
 
         if grpc_client:
-            try:
-                await grpc_client.close()
-            except Exception:
-                pass
+            try: await grpc_client.close()
+            except Exception: pass
 
         print("Real-time transcription resources cleaned up.")
