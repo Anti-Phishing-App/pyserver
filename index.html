@@ -147,7 +147,7 @@
       wsStatus.textContent = on ? 'Connected' : 'Disconnected';
     }
     function defaultWsUrl(lang) {
-      const proto = location.protocol === 'https:?' ? 'wss' : 'ws';
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       return `${proto}://${location.host}/ws/transcribe/stream?lang=${encodeURIComponent(lang)}`;
     }
     function fmtDur(ms) {
