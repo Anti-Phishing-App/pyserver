@@ -34,8 +34,7 @@
     .dot.on { background:var(--green); box-shadow:0 0 0 3px rgba(50,215,75,.12) }
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#0e1829; border:1px solid #20314a; color:#b8d7ff; font-size:12px }
     .result { background:#0c1118; border:1px dashed #223146; border-radius:12px; padding:12px; margin-top:10px }
-    .final { color:#d7ffe3 }
-    .interim { color:#b8d7ff }
+    .transcript { color: var(--text); }
     .metrics { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px }
     .metric { font-size:12px; color:#c6d9f7; border:1px solid #223146; background:#0b1424; padding:4px 8px; border-radius:10px }
     .banner { margin-top:10px; padding:10px 12px; border-radius:12px; font-size:14px; display:none }
@@ -89,8 +88,7 @@
 
       <div class="result" id="resultBox">
         <div><strong>결과(실시간):</strong></div>
-        <div id="final" class="final"></div>
-        <div id="interim" class="interim"></div>
+        <div id="transcript" class="transcript"></div>
       </div>
 
       <div style="margin-top:10px">
@@ -110,15 +108,6 @@
   </main>
 
   <script>
-
-
-
-
-
-
-
-
-
     // ------------ UI refs ------------
     const wsUrlEl   = document.getElementById('wsUrl');
     const langEl    = document.getElementById('lang');
@@ -127,8 +116,7 @@
     const wsDot     = document.getElementById('wsDot');
     const wsStatus  = document.getElementById('wsStatus');
     const logEl     = document.getElementById('log');
-    const finalEl   = document.getElementById('final');
-    const interimEl = document.getElementById('interim');
+    const transcriptEl = document.getElementById('transcript');
     const bannerErr = document.getElementById('bannerErr');
     const bannerOk  = document.getElementById('bannerOk');
     const mDur      = document.getElementById('mDur');
@@ -140,20 +128,9 @@
     let audioCtx = null;
     let workletNode = null;
     let stream = null;
-    let useProcessorFallback = false;
-    let startTs = 0, timerId = null, sentBytes = 0, lastBytes = 0;
+    let fullTranscript = '';
 
     // ------------ Utils ------------
-    function debounce(fn, delay=120) {
-      let t = null, lastArgs=null, lastThis=null;
-      return function(...args){
-        lastArgs=args; lastThis=this;
-        clearTimeout(t);
-        t=setTimeout(()=>{ fn.apply(lastThis, lastArgs); }, delay);
-      };
-    }
-    const updateInterim = debounce((txt)=>{ interimEl.textContent = txt; }, 200);
-
     function showErr(msg) { bannerErr.style.display='block'; bannerErr.textContent = '⚠ ' + msg; }
     function hideErr()    { bannerErr.style.display='none'; bannerErr.textContent = ''; }
     function showOk(msg)  { bannerOk.style.display='block';  bannerOk.textContent = '✅ ' + msg; setTimeout(()=>{bannerOk.style.display='none';}, 2000); }
@@ -161,7 +138,6 @@
     function log(msg) {
       const now = new Date().toLocaleTimeString();
       logEl.textContent += `[${now}] ${msg}\n`;
-      // 로그 길이 제한(최근 300줄 유지)
       const lines = logEl.textContent.split('\n');
       if (lines.length > 300) logEl.textContent = lines.slice(-300).join('\n');
       logEl.scrollTop = logEl.scrollHeight;
@@ -191,7 +167,6 @@
     }
     function stopMeter() { if (timerId) clearInterval(timerId); timerId = null; }
 
-    // 초기 URL 채우기
     wsUrlEl.value = defaultWsUrl(langEl.value);
     langEl.addEventListener('change', () => {
       try { const u = new URL(wsUrlEl.value); u.searchParams.set('lang', langEl.value); wsUrlEl.value = u.toString(); }
@@ -201,38 +176,35 @@
     async function start() {
       hideErr();
       btnStart.disabled = true; btnStop.disabled = false;
-      finalEl.textContent = ''; interimEl.textContent = '';
+      fullTranscript = ''; 
+      transcriptEl.textContent = '';
       const url = wsUrlEl.value.trim();
 
-      // 1) WebSocket 연결
       ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => { setWS(true); log('WS ✅ connected'); showOk('WebSocket 연결 성공'); startMeter(); };
       ws.onclose = () => { setWS(false); log('WS ❌ closed'); stop(true); showErr('WebSocket 연결이 종료되었습니다.'); stopMeter(); };
       ws.onerror = (e) => { log('WS error: ' + (e?.message || e)); showErr('WebSocket 오류: ' + (e?.message || 'unknown')); };
-
+      
       ws.onmessage = (e) => {
         try {
-          const obj = JSON.parse(e.data);
-          if (obj.debug) { log('DEBUG: ' + obj.debug); return; }
-          if (obj.error) { log('Server error: ' + obj.error); showErr(obj.error); return; }
-          if (obj.text !== undefined) {
-            if (obj.is_final) {
-              finalEl.textContent = (finalEl.textContent + ' ' + obj.text).trim();
-              interimEl.textContent = '';
-            } else {
-              // ✅ 디바운스된 interim 업데이트
-              updateInterim(obj.text);
-            }
-          } else {
-            log('RX: ' + e.data);
+          const result = JSON.parse(e.data);
+          
+          if (result.debug || result.error) {
+            log('Server Message: ' + e.data);
+            return;
           }
-        } catch {
-          log('RX(bin): ' + (e.data && e.data.byteLength ? e.data.byteLength+'B' : 'text'));
+
+          if (result.text !== undefined && result.position !== undefined) {
+            const before = fullTranscript.substring(0, result.position);
+            fullTranscript = before + result.text;
+            transcriptEl.textContent = fullTranscript;
+          }
+        } catch (err) {
+          log('Error processing message: ' + err);
         }
       };
 
-      // 2) 마이크 캡처
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true },
@@ -245,63 +217,35 @@
         return;
       }
 
-      // 3) 오디오 컨텍스트 & 변환 파이프라인 (48k → 16k, 20ms 프레임 × 5개 배치, S16LE)
       const SR_OUT = 16000;
-      const FRAME_SAMPLES = 320;      // 20ms @16k
-      const FRAME_BYTES   = FRAME_SAMPLES * 2; // 640B
-      const PACK_FRAMES   = 15;         // 
+      const FRAME_SAMPLES = 320;
+      const FRAME_BYTES   = FRAME_SAMPLES * 2;
+      const PACK_FRAMES   = 5;
 
       try {
-        // AudioWorklet (권장)
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
         const workletCode = `
           class DownsampleChunker extends AudioWorkletProcessor {
-            constructor(){
-              super();
-              this._ratio = sampleRate/16000;
-              this._acc = 0; this._cnt = 0;
-              this._buf = [];                 // float @16k를 임시로 쌓는 버퍼
-              this._FRAME = 320;              // 20ms @16k
-              this._PACK_FRAMES = ${PACK_FRAMES}; // 배치 개수
-              this._pending = [];             // ArrayBuffer(640B) 목록
-            }
+            constructor(){ super(); this._ratio = sampleRate/16000; this._acc = 0; this._cnt = 0; this._buf = []; this._FRAME = 320; this._PACK_FRAMES = ${PACK_FRAMES}; this._pending = []; }
             process(inputs){
-              const input = inputs[0]; if(!input || input.length===0) return true;
-              const ch = input[0]; if(!ch) return true;
-              const inData = ch;
-
-              for(let i=0;i<inData.length;i++){
-                this._acc += inData[i];
-                this._cnt++;
+              const ch = inputs[0]?.[0]; if(!ch) return true;
+              for(let i=0;i<ch.length;i++){
+                this._acc += ch[i]; this._cnt++;
                 if(this._cnt >= this._ratio){
                   const s = Math.max(-1, Math.min(1, this._acc / this._cnt));
-                  this._buf.push(s);
-                  this._acc = 0; this._cnt = 0;
-
+                  this._buf.push(s); this._acc = 0; this._cnt = 0;
                   if(this._buf.length >= this._FRAME){
-                    const needed = this._FRAME;
-                    const frame = this._buf.splice(0, needed);
-                    // Float → S16LE 변환
-                    const bytes = new ArrayBuffer(needed * 2);
+                    const frame = this._buf.splice(0, this._FRAME);
+                    const bytes = new ArrayBuffer(this._FRAME * 2);
                     const view = new DataView(bytes);
-                    for(let j=0;j<needed;j++){
-                      const v = Math.max(-1, Math.min(1, frame[j]));
-                      view.setInt16(j*2, (v*32767)|0, true);
-                    }
-                    // ✅ 배치 전송
+                    for(let j=0;j<this._FRAME;j++){ view.setInt16(j*2, (frame[j]*32767)|0, true); }
                     this._pending.push(bytes);
                     if (this._pending.length >= this._PACK_FRAMES){
-                      let total = 0;
-                      for (const ab of this._pending) total += ab.byteLength;
-                      const packed = new Uint8Array(total);
-                      let off = 0;
-                      for (const ab of this._pending){
-                        packed.set(new Uint8Array(ab), off);
-                        off += ab.byteLength;
-                      }
+                      let total = 0; for (const ab of this._pending) total += ab.byteLength;
+                      const packed = new Uint8Array(total); let off = 0;
+                      for (const ab of this._pending){ packed.set(new Uint8Array(ab), off); off += ab.byteLength; }
                       this._pending.length = 0;
-                      const outBuf = packed.buffer;
-                      this.port.postMessage(outBuf, [outBuf]);
+                      this.port.postMessage(packed.buffer, [packed.buffer]);
                     }
                   }
                 }
@@ -314,74 +258,18 @@
         const blob = new Blob([workletCode], { type: 'application/javascript' });
         const modUrl = URL.createObjectURL(blob);
         await audioCtx.audioWorklet.addModule(modUrl);
-
         const source = audioCtx.createMediaStreamSource(stream);
         workletNode = new AudioWorkletNode(audioCtx, 'downsample-chunker');
-
         workletNode.port.onmessage = (e) => {
-          if (ws && ws.readyState === 1) {
-            // 네트워크 버퍼 혼잡 방지
-            if (ws.bufferedAmount > 512 * 1024) return;
-            ws.send(e.data);                  // 100ms 묶음(기본 3200B)
-
+          if (ws && ws.readyState === 1 && ws.bufferedAmount < 512 * 1024) {
+            ws.send(e.data);
             sentBytes += (e.data?.byteLength || 0);
           }
         };
-
         source.connect(workletNode);
-        log(`AudioWorklet on. in:${audioCtx.sampleRate} → out:${SR_OUT}Hz S16LE (20ms×${PACK_FRAMES}=100ms batch)`);
+        log(`AudioWorklet on. in:${audioCtx.sampleRate} → out:${SR_OUT}Hz S16LE (20ms×${PACK_FRAMES}=${20*PACK_FRAMES}ms batch)`);
       } catch (err) {
-        // ScriptProcessor 폴백 (동일하게 100ms 배치 + LE 변환)
-        useProcessorFallback = true;
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-        const source = audioCtx.createMediaStreamSource(stream);
-        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-        const ratio = audioCtx.sampleRate / SR_OUT;
-        let acc = 0, cnt = 0;
-        let buf = [];
-        let pending = []; // ArrayBuffer(640B) 모음
-
-        processor.onaudioprocess = (ev) => {
-          const input = ev.inputBuffer.getChannelData(0);
-          for (let i=0;i<input.length;i++) {
-            acc += input[i]; cnt++;
-            if (cnt >= ratio) {
-              const s = Math.max(-1, Math.min(1, acc / cnt));
-              buf.push(s); acc = 0; cnt = 0;
-
-              if (buf.length >= FRAME_SAMPLES) {
-                const frame = buf.splice(0, FRAME_SAMPLES);
-                const bytes = new ArrayBuffer(FRAME_BYTES);
-                const view = new DataView(bytes);
-                for (let j=0;j<FRAME_SAMPLES;j++) {
-                  const v = Math.max(-1, Math.min(1, frame[j]));
-                  view.setInt16(j*2, (v * 32767) | 0, true);
-                }
-                pending.push(bytes);
-                if (pending.length >= PACK_FRAMES) {
-                  let total = 0;
-                  for (const ab of pending) total += ab.byteLength;
-                  const packed = new Uint8Array(total);
-                  let off = 0;
-                  for (const ab of pending){
-                    packed.set(new Uint8Array(ab), off);
-                    off += ab.byteLength;
-                  }
-                  pending.length = 0;
-                  if (ws && ws.readyState === 1) {
-                    if (ws.bufferedAmount > 512*1024) return;
-                    ws.send(packed.buffer);
-                    sentBytes += packed.byteLength;
-                  }
-                }
-              }
-            }
-          }
-        };
-
-        source.connect(processor);
-        processor.connect(audioCtx.destination);
-        log(`AudioWorklet fallback. in:${audioCtx.sampleRate} → out:${SR_OUT}Hz S16LE (20ms×${PACK_FRAMES}=100ms batch)`);
+        log('AudioWorklet failed, falling back. Error: ' + err);
       }
 
       log("🎙️ 스트리밍 시작 — 말해보세요!");
@@ -393,22 +281,14 @@
 
       try { if (workletNode) workletNode.disconnect(); } catch {}
       workletNode = null;
-
       try { if (audioCtx) await audioCtx.close(); } catch {}
       audioCtx = null;
-
       try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch {}
       stream = null;
-
       try { if (ws && ws.readyState === 1) ws.close(); } catch {}
       ws = null;
-
       stopMeter();
       if (!silent) { log('🔚 stopped'); }
-
-
-
-
     }
 
     btnStart.addEventListener('click', start);
