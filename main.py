@@ -25,6 +25,9 @@ from ocr_run import run_ocr
 from detect_keywords import detect_keywords
 from ocr_result import ocr_results_cache # OCR 결과를 저장할 캐시
 
+# 직인 분석 함수 임포트
+from stamp import run_stamp_detection  
+
 # --- 환경 변수 로드 ---
 load_dotenv()
 
@@ -354,3 +357,40 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR")
             except Exception: pass
 
         print("Real-time transcription resources cleaned up.")
+
+# =====================================================================================
+# 전체 분석 통합 API (OCR + 키워드 + 직인 + 레이아웃 + 위험도)
+# =====================================================================================
+
+@app.post("/process-request")
+async def process_request(file: UploadFile = File(...)):
+    """
+    업로드된 이미지를 기반으로 모든 분석 기능(직인, OCR, 키워드, 레이아웃, 위험도)을 수행합니다.
+    현재는 직인 분석만 실제 구현되어 있으며,
+    다른 기능은 placeholder로 반환됩니다.
+    """
+
+    # 업로드 파일 저장
+    filename = _save_uploadfile(file)
+    image_path = UPLOAD_DIR / filename
+
+    # 각 기능별 분석 호출 (우선 stamp_result만 구현)
+    stamp_result = run_stamp_detection(str(image_path))
+    # 각자 완성한 함수에 맞게 해당 부분을 대체
+    ocr_result = {"status": "pending", "text": None, "lines": []}
+    keyword_result = {"status": "pending", "phishing": None, "score": None}
+    layout_result = {"status": "pending", "type": None, "confidence": None}
+
+    # 간이 위험도 계산 (임시)
+    final_risk = round((stamp_result.get("score", 0) or 0.0) * 0.5, 2)
+
+    # 최종 결과 JSON 반환
+    return {
+        "filename": filename,
+        "url": f"/uploads/{filename}",
+        "stamp": stamp_result,
+        "ocr": ocr_result,
+        "keyword": keyword_result,
+        "layout": layout_result,
+        "final_risk": final_risk
+    }
