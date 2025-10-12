@@ -1,19 +1,28 @@
 # detect_keywords.py
 
 KEYWORD_SCORES = {
-    "송금": 10, "이체": 10, "안전계좌": 10, "보안계좌": 10, "현금 전달": 10, 
-    "구속": 10, "형사처벌": 10,
-    "검찰": 5, "경찰": 5, "금융감독원": 5, "법원": 5, "압류": 5, "긴급": 5, 
-    "즉시": 5, "피의자": 5, "명의 도용": 5,
-    "계좌": 2, "벌금": 2, "사건 번호": 2, "개인정보 유출": 2, "확인요망": 2, 
-    "출석요구서": 2, "국세청": 2
+    # 치명적 키워드 (이 단어 하나만으로도 스미싱이 강력 의심됨)
+    "안전계좌": 0.6, "보안계좌": 0.6, "현금 전달": 0.6,
+    
+    # 강력 경고 키워드 (금전, 법적 행위 직접 유도)
+    "송금": 0.4, "이체": 0.4, "구속": 0.4, "형사처벌": 0.4, "압류": 0.3,
+    
+    # 기관/권위 사칭 키워드 (압박감 조성)
+    "검찰": 0.2, "경찰": 0.2, "금융감독원": 0.2, "법원": 0.2, "국세청": 0.1,
+    
+    # 긴급성/특정 행위 유도 키워드
+    "긴급": 0.2, "즉시": 0.2, "피의자": 0.2, "명의 도용": 0.2, "개인정보 유출": 0.2,
+    "사건 번호": 0.1, "출석요구서": 0.1, 
+    
+    # 주의 키워드 (문맥 강화)
+    "계좌": 0.1, "벌금": 0.1, "확인요망": 0.1
 }
 
 def detect_keywords(ocr_result: dict):
 
     found_details = []
     found_unique_keywords = set()
-    total_score = 0
+    total_score = 0.0
 
     # OCR 결과에서 텍스트 순회하며 키워드 검출
     for image in ocr_result.get("images", []):
@@ -26,19 +35,25 @@ def detect_keywords(ocr_result: dict):
                     total_score += score
     
     # 총점에 따라 위험도 결정
+    total_score = min(total_score, 1.0)
+
     if not found_details:
         return {"risk_level": "없음", "total_score": 0, "details": []}
 
-    if total_score >= 15:
-        risk_level = "높음"
-    elif total_score >= 8:
-        risk_level = "중간"
-    else:
+    if total_score == 0:
+        risk_level = "없음"
+    elif total_score < 0.4:
         risk_level = "낮음"
+    elif total_score < 0.7:
+        risk_level = "중간"
+    elif total_score < 0.9:
+        risk_level = "높음"
+    else: # 0.9 이상
+        risk_level = "치명적"
         
     # 딕셔너리 형태로 최종 결과 반환
     return {
         "risk_level": risk_level,
-        "total_score": total_score,
+        "total_score": round(total_score, 2), # 소수점 둘째 자리까지 반올림
         "details": found_details
     }

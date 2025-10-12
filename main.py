@@ -21,9 +21,8 @@ import grpc  # AioRpcError 등 사용
 from clova_grpc_client import ClovaSpeechClient
 
 # OCR 실행 및 키워드 검출
-from ocr_run import run_ocr
+from ocr_run import run_ocr, OCRError
 from detect_keywords import detect_keywords
-from ocr_result import ocr_results_cache # OCR 결과를 저장할 캐시
 
 # 직인 분석 함수 임포트
 from stamp import run_stamp_detection  
@@ -149,51 +148,6 @@ async def upload_images(files: List[UploadFile] = File(...)):
         saved = _save_uploadfile(f)
         results.append({"filename": saved, "url": f"/uploads/{saved}"})
     return JSONResponse({"files": results})
-
-
-# =====================================================================================
-# OCR 및 키워드 분석
-# =====================================================================================
-class ImageAnalysisRequest(BaseModel):
-    filename: str
-
-@app.post("/call-ocr")
-async def call_ocr(request: ImageAnalysisRequest):
-    """
-    서버에 저장된 이미지 파일(`filename`)로 OCR 실행, 결과를 ocr_results_cache에 저장
-    """
-    filename = request.filename
-    image_path = UPLOAD_DIR / filename
-    
-    if not image_path.exists():
-        raise HTTPException(status_code=404, detail=f"'{filename}' 파일을 찾을 수 없습니다.")
-
-    # OCR 실행
-    ocr_result = run_ocr(str(image_path))
-    if ocr_result.get("error"):
-        raise HTTPException(status_code=500, detail=f"OCR 실패: {ocr_result.get('message')}")
-
-    # OCR 결과 캐시에 저장
-    ocr_results_cache[filename] = ocr_result
-    
-    return {"status": "success", "message": f"'{filename}'에 대한 OCR 완료 및 결과 저장 성공"}
-
-@app.post("/detect-phishing-keywords")
-async def detect_phishing_keywords(request: ImageAnalysisRequest):
-    """
-    ocr_results_cache에 저장된 OCR 결과를 사용, 키워드 분석
-    """
-    filename = request.filename
-    if filename not in ocr_results_cache:
-        raise HTTPException(status_code=404, detail=f"'{filename}'에 대한 OCR 결과가 캐시에 없습니다. /run-ocr를 먼저 호출하세요.")
-
-    # 캐시에서 결과 가져오기
-    ocr_result = ocr_results_cache[filename]
-
-    # 키워드 분석
-    analysis_result = detect_keywords(ocr_result)
-    
-    return analysis_result
 
 # =====================================================================================
 # 저장된 녹음 파일 인식 (CLOVA Speech REST - 필요 시 유지)
@@ -366,7 +320,7 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR")
 async def process_request(file: UploadFile = File(...)):
     """
     업로드된 이미지를 기반으로 모든 분석 기능(직인, OCR, 키워드, 레이아웃, 위험도)을 수행합니다.
-    현재는 직인 분석만 실제 구현되어 있으며,
+    현재는 직인, OCR, 키워드 분석만 실제 구현되어 있으며,
     다른 기능은 placeholder로 반환됩니다.
     """
 
@@ -374,23 +328,36 @@ async def process_request(file: UploadFile = File(...)):
     filename = _save_uploadfile(file)
     image_path = UPLOAD_DIR / filename
 
-    # 각 기능별 분석 호출 (우선 stamp_result만 구현)
-    stamp_result = run_stamp_detection(str(image_path))
-    # 각자 완성한 함수에 맞게 해당 부분을 대체
-    ocr_result = {"status": "pending", "text": None, "lines": []}
-    keyword_result = {"status": "pending", "phishing": None, "score": None}
-    layout_result = {"status": "pending", "type": None, "confidence": None}
+    try:
+        # 각 기능별 분석 호출
+        stamp_result = run_stamp_detection(str(image_path))
+        # ocr_run 실패하면 OCRError 발생, except 블록으로 넘어감
+        ocr_result = run_ocr(str(image_path))
+        keyword_result = detect_keywords(ocr_result)
+        # 각자 완성한 함수에 맞게 해당 부분을 대체
+        layout_result = {"status": "pending", "type": None, "confidence": None}
 
-    # 간이 위험도 계산 (임시)
-    final_risk = round((stamp_result.get("score", 0) or 0.0) * 0.5, 2)
+        # 간이 위험도 계산 (임시)
+        stamp_score = stamp_result.get("score", 0) or 0.0
+        keyword_score = keyword_result.get("total_score", 0) or 0.0
 
-    # 최종 결과 JSON 반환
-    return {
-        "filename": filename,
-        "url": f"/uploads/{filename}",
-        "stamp": stamp_result,
-        "ocr": ocr_result,
-        "keyword": keyword_result,
-        "layout": layout_result,
-        "final_risk": final_risk
-    }
+        # 가중치 부여: 직인 점수의 중요도 50%, 키워드 점수의 중요도 50%로 설정하여 합산
+        final_risk = round((stamp_score * 0.5) + (keyword_score * 0.5), 2)
+
+        # 최종 결과 JSON 반환
+        return {
+            "filename": filename,
+            "url": f"/uploads/{filename}",
+            "stamp": stamp_result,
+            "ocr": ocr_result,
+            "keyword": keyword_result,
+            "layout": layout_result,
+            "final_risk": final_risk
+        }
+    
+    except OCRError as e:
+        # OCR 모듈에서 발생한 오류를 여기서 잡아서 처리
+        raise HTTPException(status_code=500, detail=f"OCR 처리 실패: {e}")
+    except Exception as e:
+        # 그 외 예상치 못한 모든 오류 처리 (직인 탐지 등)
+        raise HTTPException(status_code=500, detail=f"알 수 없는 서버 오류: {e}")
