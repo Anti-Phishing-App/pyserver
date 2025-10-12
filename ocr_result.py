@@ -1,1 +1,0 @@
-ocr_results_cache = {}
