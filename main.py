@@ -24,6 +24,9 @@ from clova_grpc_client import ClovaSpeechClient
 from ocr_run import run_ocr, OCRError
 from detect_keywords import detect_keywords
 
+# 텍스트 레이아웃 분석 함수
+from layout_analysis import analyze_document_font
+
 # 직인 분석 함수 임포트
 from stamp import run_stamp_detection  
 
@@ -334,12 +337,12 @@ async def process_request(file: UploadFile = File(...)):
         # ocr_run 실패하면 OCRError 발생, except 블록으로 넘어감
         ocr_result = run_ocr(str(image_path))
         keyword_result = detect_keywords(ocr_result)
-        # 각자 완성한 함수에 맞게 해당 부분을 대체
-        layout_result = {"status": "pending", "type": None, "confidence": None}
+        layout_result = analyze_document_font(ocr_result)
 
         # 간이 위험도 계산 (임시)
         stamp_score = stamp_result.get("score", 0) or 0.0
         keyword_score = keyword_result.get("total_score", 0) or 0.0
+        layout_score = layout_result.get("score", 0) or 0.0
 
         # 가중치 부여: 직인 점수의 중요도 50%, 키워드 점수의 중요도 50%로 설정하여 합산
         final_risk = round((stamp_score * 0.5) + (keyword_score * 0.5), 2)
