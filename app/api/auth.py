@@ -1,5 +1,11 @@
 """
 Authentication API endpoints
+
+사용자 인증 관련 API 엔드포인트를 정의합니다.
+- 회원가입: 새로운 사용자 계정 생성
+- 로그인: JWT 토큰 발급
+- 로그아웃: 클라이언트 측 토큰 삭제 안내
+- 토큰 갱신: 리프레시 토큰으로 새 액세스 토큰 발급
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -38,6 +44,28 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
     회원가입
 
     새로운 사용자 계정을 생성합니다.
+
+    Args:
+        request: 회원가입 요청 데이터 (username, email, password 등)
+        db: 데이터베이스 세션 (자동 주입)
+
+    Returns:
+        UserResponse: 생성된 사용자 정보 (비밀번호 제외)
+
+    Raises:
+        HTTPException 400: 이미 사용 중인 username 또는 email
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/auth/signup" \\
+             -H "Content-Type: application/json" \\
+             -d '{
+               "username": "john_doe",
+               "email": "john@example.com",
+               "password": "securepass123!",
+               "full_name": "John Doe"
+             }'
+        ```
     """
     # 중복 체크 - username
     existing_user = db.query(User).filter(User.username == request.username).first()
@@ -78,6 +106,40 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
     로그인
 
     사용자 인증 후 액세스 토큰과 리프레시 토큰을 발급합니다.
+
+    Args:
+        request: 로그인 요청 데이터 (username, password)
+        db: 데이터베이스 세션 (자동 주입)
+
+    Returns:
+        TokenResponse: JWT 액세스 토큰 + 리프레시 토큰
+
+    Raises:
+        HTTPException 401: 잘못된 username 또는 password
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/auth/login" \\
+             -H "Content-Type: application/json" \\
+             -d '{
+               "username": "john_doe",
+               "password": "securepass123!"
+             }'
+        ```
+
+        Response:
+        ```json
+        {
+          "access_token": "eyJhbGc...",
+          "refresh_token": "eyJhbGc...",
+          "token_type": "bearer"
+        }
+        ```
+
+        이후 API 요청 시 헤더에 포함:
+        ```
+        Authorization: Bearer {access_token}
+        ```
     """
     user = authenticate_user(db, request.username, request.password)
     if not user:
