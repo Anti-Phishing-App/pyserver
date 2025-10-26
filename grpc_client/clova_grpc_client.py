@@ -6,8 +6,8 @@ import grpc
 
 # 반드시 nest.proto로 생성한 파이썬 스텁을 임포트해야 합니다.
 #   python -m grpc_tools.protoc -I . --python_out=. --grpc_python_out=. nest.proto
-import nest_pb2
-import nest_pb2_grpc
+from . import nest_pb2
+from . import nest_pb2_grpc
 
 
 class ClovaSpeechClient:
