@@ -46,3 +46,12 @@ htmlcov/
 # 임시 파일
 *.tmp
 *.temp
+tmp/
+
+# 데이터베이스
+*.db
+*.sqlite
+*.sqlite3
+
+# 테스트 파일
+test_*.py
