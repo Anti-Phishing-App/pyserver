@@ -1,5 +1,15 @@
 """
 User management API endpoints
+
+사용자 관리 관련 API 엔드포인트를 정의합니다.
+- 내 정보 조회/수정
+- 회원탈퇴 (soft delete)
+- 아이디 찾기 (이메일 기반)
+- 비밀번호 재설정
+
+Note:
+    이 API들은 대부분 인증이 필요합니다. (Authorization 헤더 필요)
+    아이디 찾기와 비밀번호 재설정은 인증 불필요합니다.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -91,8 +101,22 @@ def delete_my_account(
     """
     회원탈퇴
 
-    현재 로그인한 사용자의 계정을 삭제합니다.
+    현재 로그인한 사용자의 계정을 비활성화합니다.
     실제로는 is_active를 False로 변경합니다 (soft delete).
+    데이터는 남아있지만 로그인할 수 없습니다.
+
+    Args:
+        current_user: 현재 인증된 사용자 (자동 주입)
+        db: 데이터베이스 세션 (자동 주입)
+
+    Returns:
+        MessageResponse: 성공 메시지
+
+    Example:
+        ```bash
+        curl -X DELETE "http://localhost:8000/user/me" \\
+             -H "Authorization: Bearer {access_token}"
+        ```
     """
     # Soft delete: is_active를 False로 설정
     current_user.is_active = False
@@ -107,6 +131,32 @@ def find_username(request: FindUsernameRequest, db: Session = Depends(get_db)):
     아이디 찾기
 
     이메일을 통해 사용자 아이디를 찾습니다.
+    회원가입 시 등록한 이메일로 아이디를 조회합니다.
+
+    Args:
+        request: 아이디 찾기 요청 (email)
+        db: 데이터베이스 세션 (자동 주입)
+
+    Returns:
+        FindUsernameResponse: 찾은 아이디와 가입일
+
+    Raises:
+        HTTPException 404: 해당 이메일로 가입된 계정 없음
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/user/find-username" \\
+             -H "Content-Type: application/json" \\
+             -d '{"email": "john@example.com"}'
+        ```
+
+        Response:
+        ```json
+        {
+          "username": "john_doe",
+          "created_at": "2025-10-26T10:00:00"
+        }
+        ```
     """
     user = db.query(User).filter(User.email == request.email).first()
 
@@ -128,7 +178,38 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     비밀번호 재설정
 
     이메일과 아이디를 확인하여 비밀번호를 재설정합니다.
-    실제 서비스에서는 이메일 인증 등의 추가 보안 절차가 필요합니다.
+
+    Warning:
+        실제 서비스에서는 이메일 인증 코드 발송 등의 추가 보안 절차가 필요합니다.
+        현재는 단순히 이메일+아이디 조합만 확인합니다.
+
+    Args:
+        request: 비밀번호 재설정 요청 (email, username, new_password)
+        db: 데이터베이스 세션 (자동 주입)
+
+    Returns:
+        MessageResponse: 성공 메시지
+
+    Raises:
+        HTTPException 404: 해당 이메일+아이디 조합의 계정 없음
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/user/reset-password" \\
+             -H "Content-Type: application/json" \\
+             -d '{
+               "email": "john@example.com",
+               "username": "john_doe",
+               "new_password": "newpassword123!"
+             }'
+        ```
+
+        Response:
+        ```json
+        {
+          "message": "Password successfully reset"
+        }
+        ```
     """
     # 사용자 찾기
     user = db.query(User).filter(
