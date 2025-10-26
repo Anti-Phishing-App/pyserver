@@ -3,6 +3,7 @@ python Fastapi server
 
 ### 디렉토리 구조
 
+```
  pyserver/
   ├── app/
   │   ├── __init__.py
@@ -101,3 +102,4 @@ python Fastapi server
   ├── requirements.txt
   ├── README.md
   └── index.html
+```
