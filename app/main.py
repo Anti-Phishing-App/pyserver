@@ -5,16 +5,27 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import UPLOAD_DIR
-from app.api import upload, transcribe, document
+from app.api import upload, transcribe, document, auth, user
+from app.core.database import init_db
 
 # FastAPI 앱 초기화
 app = FastAPI(title="PyServer API", version="1.0.0")
+
+
+# 애플리케이션 시작 시 DB 초기화
+@app.on_event("startup")
+def on_startup():
+    """애플리케이션 시작 시 데이터베이스 초기화"""
+    init_db()
+
 
 # 정적 파일 마운트
 app.mount("/static", StaticFiles(directory="."), name="static")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # API 라우터 등록
+app.include_router(auth.router, tags=["Authentication"])
+app.include_router(user.router, tags=["User Management"])
 app.include_router(upload.router, tags=["Upload"])
 app.include_router(transcribe.router, tags=["Transcribe"])
 app.include_router(document.router, tags=["Document"])
