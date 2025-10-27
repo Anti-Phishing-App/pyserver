@@ -30,9 +30,12 @@ def analyze_document(image_path: Path) -> dict:
         keyword_score = keyword_result.get("total_score", 0) or 0.0
         layout_score = layout_result.get("score", 0) or 0.0
 
-        # 가중치 부여: 직인 50%, 키워드 50%
-        final_risk = round((stamp_score * 0.5) + (keyword_score * 0.5), 2)
+        # 가중치 부여: 직인 30%, 키워드 50%, 레이아웃 20%
+        # TODO : 기능 실행 후 상세 퍼센트 조정
+        final_risk = round((stamp_score * 0.3) + (keyword_score * 0.5) + (layout_score * 0.2), 2) 
 
+        # 각 분석 함수의 전체 결과 딕셔너리를 그대로 반환받아서 합친 형태로 기존 함수들이 반환하던 상세 정보(boxes, details, risk_level 등)는 모두 그대로 유지됨
+        # 점수만 사용 원할 경우 final_risk 만 사용하면 되는 그런 형태임!!!
         return {
             "stamp": stamp_result,
             "ocr": ocr_result,
