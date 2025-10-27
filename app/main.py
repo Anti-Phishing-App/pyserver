@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import UPLOAD_DIR
-from app.api import upload, transcribe, document, auth, user
+from app.api import upload, transcribe, document, auth, user, voice_phishing
 from app.core.database import init_db
 
 # FastAPI 앱 초기화
@@ -29,6 +29,7 @@ app.include_router(user.router, tags=["User Management"])
 app.include_router(upload.router, tags=["Upload"])
 app.include_router(transcribe.router, tags=["Transcribe"])
 app.include_router(document.router, tags=["Document"])
+app.include_router(voice_phishing.router, tags=["Voice Phishing Detection"])
 
 
 # =========================
