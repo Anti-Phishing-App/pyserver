@@ -21,6 +21,7 @@ async def process_request(file: UploadFile = File(...)):
     # 문서 분석
     result = analyze_document(image_path)
 
+    # 앱에서 받아올 return 값 구조
     return {
         "filename": filename,
         "url": f"/uploads/{filename}",
