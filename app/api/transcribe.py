@@ -8,6 +8,7 @@ import grpc
 
 from app.config import CLOVA_INVOKE_URL, CLOVA_SECRET_KEY
 from grpc_client.clova_grpc_client import ClovaSpeechClient
+from app.services.voice_phishing_service import create_session
 
 router = APIRouter()
 
@@ -90,17 +91,37 @@ async def transcribe_status(token: str):
 # 실시간 스트리밍 음성 인식 (WebSocket + gRPC - NestService)
 # =====================================================================================
 @router.websocket("/ws/transcribe/stream")
-async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR"):
-    """실시간 음성 인식 WebSocket"""
+async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR", enable_phishing_detection: bool = True):
+    """
+    실시간 음성 인식 + 보이스피싱 탐지 WebSocket
+
+    Args:
+        lang: 언어 코드 (기본값: ko-KR)
+        enable_phishing_detection: 보이스피싱 탐지 활성화 여부 (기본값: True)
+
+    WebSocket 메시지 형식:
+        - type: "transcription" - 음성 인식 결과
+        - type: "phishing_alert" - 보이스피싱 탐지 알림
+        - type: "error" - 에러 메시지
+    """
     await websocket.accept()
 
     grpc_client: ClovaSpeechClient | None = None
     audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
     response_task: asyncio.Task | None = None
+    phishing_session = None
 
     try:
         if not CLOVA_SECRET_KEY:
             raise RuntimeError("CLOVA_SECRET_KEY 환경변수가 필요합니다.")
+
+        # 보이스피싱 탐지 세션 초기화
+        if enable_phishing_detection:
+            try:
+                phishing_session = create_session(window_size=5)
+            except Exception as e:
+                print(f"보이스피싱 탐지 초기화 실패: {e}")
+                enable_phishing_detection = False
 
         grpc_client = ClovaSpeechClient(secret_key=CLOVA_SECRET_KEY)
         lang_short = (lang or "ko-KR").split("-")[0].lower()
@@ -132,19 +153,59 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR")
                         tr = payload.get("transcription")
 
                         if isinstance(tr, dict) and "text" in tr:
-                            await websocket.send_json(tr)
+                            text = tr.get("text", "")
+                            is_final = tr.get("isFinal", False)
 
-                    except Exception:
-                        await websocket.send_json({"debug": contents})
+                            # 음성 인식 결과 전송
+                            await websocket.send_json({
+                                "type": "transcription",
+                                "text": text,
+                                "is_final": is_final
+                            })
+
+                            # 보이스피싱 탐지 (최종 결과이고, 충분한 길이일 때)
+                            if enable_phishing_detection and phishing_session and is_final and len(text) >= 5:
+                                try:
+                                    result = phishing_session.add_sentence(text)
+
+                                    # 즉시 분석 결과 (단어 기반)
+                                    if result['immediate'] and result['immediate']['level'] > 0:
+                                        await websocket.send_json({
+                                            "type": "phishing_alert",
+                                            "alert_type": "immediate",
+                                            "text": text,
+                                            "risk_level": result['immediate']['level'],
+                                            "risk_probability": result['immediate']['probability'],
+                                            "phishing_type": result['immediate'].get('phishing_type'),
+                                            "keywords": result['immediate'].get('keywords', [])
+                                        })
+
+                                    # 종합 분석 결과 (KoBERT)
+                                    if result['comprehensive']:
+                                        if result['comprehensive']['is_phishing']:
+                                            await websocket.send_json({
+                                                "type": "phishing_alert",
+                                                "alert_type": "comprehensive",
+                                                "is_phishing": True,
+                                                "confidence": result['comprehensive']['confidence'],
+                                                "analyzed_length": result['comprehensive']['analyzed_length']
+                                            })
+
+                                except Exception as e:
+                                    print(f"보이스피싱 탐지 오류: {e}")
+
+                    except Exception as e:
+                        print(f"Payload parsing error: {e}")
+                        await websocket.send_json({"type": "debug", "contents": contents})
 
             except grpc.aio.AioRpcError as e:
                 msg = f"gRPC Error: {e.details()} (code: {e.code().name})"
                 print(msg)
-                try: await websocket.send_json({"error": msg})
+                try: await websocket.send_json({"type": "error", "message": msg})
                 except Exception: pass
             except Exception as e:
                 print(f"Response handler error: {e}")
-                try: await websocket.send_json({"error": f"{e}"})
+                try: await websocket.send_json({"type": "error", "message": f"{e}"})
                 except Exception: pass
 
         response_task = asyncio.create_task(response_handler())
@@ -158,7 +219,7 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR")
         print("WebSocket disconnected.")
     except Exception as e:
         print(f"WS handler error: {e}")
-        try: await websocket.send_json({"error": str(e)})
+        try: await websocket.send_json({"type": "error", "message": str(e)})
         except Exception: pass
     finally:
         try: await audio_queue.put(None)
@@ -172,5 +233,8 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR")
         if grpc_client:
             try: await grpc_client.close()
             except Exception: pass
+
+        if phishing_session:
+            phishing_session.reset()
 
         print("Real-time transcription resources cleaned up.")
