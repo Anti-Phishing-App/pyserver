@@ -1,4 +1,15 @@
-"""보이스피싱 탐지 스키마"""
+"""
+보이스피싱 탐지 API 스키마
+
+이 모듈은 보이스피싱 탐지 API의 요청/응답 스키마를 정의합니다.
+
+스키마 종류:
+    - TextAnalysisRequest: 텍스트 분석 요청
+    - ImmediateResult: 단어 기반 즉시 분석 결과
+    - ComprehensiveResult: KoBERT 기반 종합 분석 결과
+    - AnalysisResponse: 전체 분석 응답
+    - StreamAnalysisMessage: WebSocket 스트리밍 메시지
+"""
 from pydantic import BaseModel, Field
 from typing import Optional, List
 

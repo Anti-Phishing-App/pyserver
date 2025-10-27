@@ -4,14 +4,6 @@ Python FastAPI 기반 피싱 탐지 서버
 ## 개요
 보이스피싱, 문서 위조, URL 피싱, SMS 피싱 등을 탐지하는 AI 기반 서버
 
-## 주요 기능
-- 🔐 JWT 기반 사용자 인증 (회원가입/로그인/로그아웃)
-- 👤 사용자 관리 (회원탈퇴, 아이디/비밀번호 찾기)
-- 📞 보이스피싱 탐지 (STT + AI 분석)
-- 📄 문서 위조 탐지 (OCR + 이미지 분석)
-- 🌐 URL 피싱 탐지 (예정)
-- 💬 SMS 피싱 탐지 (예정)
-
 ## 디렉토리 구조
 
 ```
@@ -34,25 +26,42 @@ Python FastAPI 기반 피싱 탐지 서버
   │   ├── schemas/                     # Pydantic 스키마 (요청/응답) ✅
   │   │   ├── __init__.py
   │   │   ├── auth.py                  # 로그인/회원가입 요청/응답
-  │   │   └── user.py                  # 사용자 정보 요청/응답
+  │   │   ├── user.py                  # 사용자 정보 요청/응답
+  │   │   └── voice_phishing.py        # 보이스피싱 분석 요청/응답
   │   │
   │   ├── api/                         # API 라우터 ✅
   │   │   ├── __init__.py
   │   │   ├── auth.py                  # 인증 API (회원가입, 로그인, 토큰 갱신)
   │   │   ├── user.py                  # 사용자 관리 API (탈퇴, 정보수정, 찾기)
-  │   │   ├── transcribe.py            # 음성 변환 API (STT)
+  │   │   ├── transcribe.py            # 음성 변환 API (STT + 실시간 탐지)
+  │   │   ├── voice_phishing.py        # 보이스피싱 탐지 API
   │   │   ├── document.py              # 문서 위조 탐지 API
   │   │   └── upload.py                # 파일 업로드 API
   │   │
   │   ├── services/                    # 비즈니스 로직
-  │   │   └── __init__.py
+  │   │   ├── __init__.py
+  │   │   └── voice_phishing_service.py  # 보이스피싱 탐지 서비스
   │   │
   │   ├── ml/                          # AI 모델
-  │   │   └── __init__.py
+  │   │   ├── __init__.py
+  │   │   └── kobert_classifier/       # KoBERT 보이스피싱 분류기
+  │   │       ├── BERTClassifier.py    # BERT 모델 구조
+  │   │       ├── BERTDataset.py       # 데이터셋 클래스
+  │   │       ├── predict.py           # 추론 함수
+  │   │       └── train.py             # 학습 함수
   │   │
   │   └── utils/                       # 공통 유틸리티
   │       ├── __init__.py
   │       └── ...
+  │
+  ├── data/                            # 학습 데이터 및 모델 파일
+  │   ├── csv/                         # 학습 데이터셋
+  │   │   ├── 500_가중치.csv           # 위험 단어 가중치
+  │   │   ├── type_token_가중치.csv    # 범죄 유형별 단어 가중치
+  │   │   └── KoBERT_dataset_v2.5.csv  # KoBERT 학습 데이터
+  │   └── models/
+  │       └── kobert/
+  │           └── train.pt             # 학습된 KoBERT 모델
   │
   ├── grpc_client/                     # gRPC 클라이언트 (CLOVA STT)
   │   └── ...
