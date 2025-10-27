@@ -1,4 +1,27 @@
-"""보이스피싱 탐지 API"""
+"""
+보이스피싱 탐지 API 라우터
+
+이 모듈은 보이스피싱 탐지 관련 REST API 엔드포인트를 제공합니다.
+
+주요 기능:
+    1. 텍스트 기반 분석 (/analyze)
+       - 입력된 텍스트의 보이스피싱 여부 분석
+       - 하이브리드 탐지: 단어 기반 + KoBERT 딥러닝
+
+    2. 음성 파일 분석 (/analyze-audio)
+       - 음성 파일 → STT → 보이스피싱 탐지 (원스톱)
+       - CLOVA Speech API와 통합
+
+    3. 서비스 상태 확인 (/health)
+       - 모델 로드 상태 및 서비스 가용성 체크
+
+분석 방법:
+    - immediate: 단어 기반 즉시 분석 (빠름, 실시간 적합)
+    - comprehensive: KoBERT 종합 분석 (정확함, 누적 분석 적합)
+    - hybrid: 두 방법 모두 실행 (기본값, 추천)
+
+실시간 스트리밍 탐지는 /ws/transcribe/stream (transcribe.py)에서 처리됩니다.
+"""
 import json
 import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
