@@ -44,6 +44,11 @@ Python FastAPI 기반 피싱 탐지 서버
   │   │
   │   ├── ml/                          # AI 모델
   │   │   ├── __init__.py
+  │   │   ├── predictors/       # 예측 관련 파일
+  │   │   │   ├── keyword_predictor.py # 키워드 위험도 확인 함수
+  │   │   │   ├── layout_predictor.py  # 레이아웃 위험도 확인 함수
+  │   │   │   ├── ocr_predictor.py     # ocr 결과 확인 함수
+  │   │   │   └── stamp_predictor.py   # 직인 결과 확인 함수
   │   │   └── kobert_classifier/       # KoBERT 보이스피싱 분류기
   │   │       ├── BERTClassifier.py    # BERT 모델 구조
   │   │       ├── BERTDataset.py       # 데이터셋 클래스
