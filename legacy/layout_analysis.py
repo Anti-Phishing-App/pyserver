@@ -51,68 +51,71 @@ def check_line_spacing_consistency(lines):
         
     return 0
 
-def analyze_document_font(json_file_path):
+def analyze_document_font(ocr_result: dict):
+
     try:
-        with open(json_file_path, 'r', encoding='utf-8') as f:
-            ocr_result = json.load(f)
-    except FileNotFoundError:
-        return {"error": f"파일을 찾을 수 없습니다: {json_file_path}"}
 
-    fields = ocr_result.get("images", [{}])[0].get("fields", [])
-    if not fields:
-        return {"error": "분석할 텍스트(fields)가 없습니다."}
+        fields = ocr_result.get("images", [{}])[0].get("fields", [])
+        if not fields:
+            return {"error": False, "score": 0.0, "message": "분석할 텍스트가 없습니다."}
 
-    processed_words = []
-    for field in fields:
-        vertices = field.get("boundingPoly", {}).get("vertices", [])
-        if len(vertices) == 4 and field.get('inferText'): # 텍스트가 있는 경우만 처리
-            processed_words.append({
-                'text': field.get("inferText", ""),
-                'top': (vertices[0]['y'] + vertices[1]['y']) / 2,
-                'height': ((vertices[2]['y'] + vertices[3]['y']) / 2) - ((vertices[0]['y'] + vertices[1]['y']) / 2),
-                'left': vertices[0]['x'],
-                'width': vertices[1]['x'] - vertices[0]['x']
-            })
+        processed_words = []
+        for field in fields:
+            vertices = field.get("boundingPoly", {}).get("vertices", [])
+            if len(vertices) == 4 and field.get('inferText'): # 텍스트가 있는 경우만 처리
+                processed_words.append({
+                    'text': field.get("inferText", ""),
+                    'top': (vertices[0]['y'] + vertices[1]['y']) / 2,
+                    'height': ((vertices[2]['y'] + vertices[3]['y']) / 2) - ((vertices[0]['y'] + vertices[1]['y']) / 2),
+                    'left': vertices[0]['x'],
+                    'width': vertices[1]['x'] - vertices[0]['x']
+                })
+        
+        processed_words.sort(key=lambda w: w['top'])
+
+        lines = []
+        if processed_words:
+            current_line = [processed_words[0]]
+            for word in processed_words[1:]:
+                base_word = current_line[0]
+                # 같은 라인 판단 기준: 기준 단어 높이의 50% 이내에 있으면 같은 라인으로 간주
+                if abs(word['top'] - base_word['top']) < base_word['height'] * 0.5:
+                    current_line.append(word)
+                else:
+                    lines.append(current_line)
+                    current_line = [word]
+            lines.append(current_line)
+
+        total_score = 0
+        
+        total_score += check_line_spacing_consistency(lines)
+        
+        # 각 라인 내부 일관성 검사
+        for line in lines:
+            total_score += check_height_consistency(line)
+            total_score += check_alignment_consistency(line)
+            total_score += check_spacing_consistency(line)
+
+        final_score = min(total_score / 80.0, 1.0)
+
+        return {
+            "error": False,
+            "score": final_score,
+        }
     
-    processed_words.sort(key=lambda w: w['top'])
+    except Exception as e:
+        return {"error": True, "message": str(e)}
 
-    lines = []
-    if processed_words:
-        current_line = [processed_words[0]]
-        for word in processed_words[1:]:
-            base_word = current_line[0]
-            # 같은 라인 판단 기준: 기준 단어 높이의 50% 이내에 있으면 같은 라인으로 간주
-            if abs(word['top'] - base_word['top']) < base_word['height'] * 0.5:
-                current_line.append(word)
-            else:
-                lines.append(current_line)
-                current_line = [word]
-        lines.append(current_line)
-
-    total_score = 0
-    
-    total_score += check_line_spacing_consistency(lines)
-    
-    # 각 라인 내부 일관성 검사
-    for line in lines:
-        total_score += check_height_consistency(line)
-        total_score += check_alignment_consistency(line)
-        total_score += check_spacing_consistency(line)
-    
-    # 최종 판정
-    decision = "Safe"
-    if total_score > 50:
-        decision = "Danger"
-    elif total_score > 20:
-        decision = "Warning"
-
-    return {
-        "score": total_score,
-        "decision": decision
-    }
 
 if __name__ == "__main__":
     result_file = "ocr_result.json" 
-    analysis_result = analyze_document_font(result_file)
-    print("--- 최종 모듈 테스트 결과 ---")
-    print(analysis_result)
+    try:
+        with open(result_file, 'r', encoding='utf-8') as f:
+            ocr_data = json.load(f)
+            
+        analysis_result = analyze_document_font(ocr_data)
+        print("--- 최종 모듈 테스트 결과 ---")
+        print(analysis_result)
+        
+    except FileNotFoundError:
+        print(f"오류: 테스트 파일 '{result_file}'을(를) 찾을 수 없습니다.")
