@@ -19,41 +19,38 @@ KEYWORD_SCORES = {
 }
 
 def detect_keywords(ocr_result: dict):
+    try:
 
-    found_details = []
-    found_unique_keywords = set()
-    total_score = 0.0
+        found_details = []
+        found_unique_keywords = set()
+        total_score = 0.0
 
-    # OCR 결과에서 텍스트 순회하며 키워드 검출
-    for image in ocr_result.get("images", []):
-        for field in image.get("fields", []):
-            text = field.get("inferText", "")
-            for kw, score in KEYWORD_SCORES.items():
-                if kw in text and kw not in found_unique_keywords:
-                    found_details.append({"keyword": kw, "full_text": text, "score": score})
-                    found_unique_keywords.add(kw)
-                    total_score += score
+        # OCR 결과에서 텍스트 순회하며 키워드 검출
+        for image in ocr_result.get("images", []):
+            for field in image.get("fields", []):
+                text = field.get("inferText", "")
+                for kw, score in KEYWORD_SCORES.items():
+                    if kw in text and kw not in found_unique_keywords:
+                        found_details.append({"keyword": kw, "full_text": text, "score": score})
+                        found_unique_keywords.add(kw)
+                        total_score += score
     
-    # 총점에 따라 위험도 결정
-    total_score = min(total_score, 1.0)
+        # 총점에 따라 위험도 결정
+        total_score = min(total_score, 1.0)
 
-    if not found_details:
-        return {"risk_level": "없음", "total_score": 0, "details": []}
-
-    if total_score == 0:
-        risk_level = "없음"
-    elif total_score < 0.4:
-        risk_level = "낮음"
-    elif total_score < 0.7:
-        risk_level = "중간"
-    elif total_score < 0.9:
-        risk_level = "높음"
-    else: # 0.9 이상
-        risk_level = "치명적"
+        if not found_details:
+            return {
+                "error": False,
+                "total_score": 0,
+                "details": []
+            }
         
-    # 딕셔너리 형태로 최종 결과 반환
-    return {
-        "risk_level": risk_level,
-        "total_score": round(total_score, 2), # 소수점 둘째 자리까지 반올림
-        "details": found_details
-    }
+        # 딕셔너리 형태로 최종 결과 반환
+        return {
+            "error": False,
+            "total_score": round(total_score, 2), # 소수점 둘째 자리까지 반올림
+            "details": found_details
+        }
+    
+    except Exception as e:
+        return {"error": True, "message": str(e)}
