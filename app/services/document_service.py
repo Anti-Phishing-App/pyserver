@@ -38,7 +38,6 @@ def analyze_document(image_path: Path) -> dict:
         # 점수만 사용 원할 경우 final_risk 만 사용하면 되는 그런 형태임!!!
         return {
             "stamp": stamp_result,
-            "ocr": ocr_result,
             "keyword": keyword_result,
             "layout": layout_result,
             "final_risk": final_risk
