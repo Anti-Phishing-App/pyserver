@@ -10,8 +10,8 @@ import os
 class OCRError(Exception):
     pass
 
-#API_URL = os.getenv('CLOVA_API_URL', 'https://fwymjktetd.apigw.ntruss.com/custom/v1/45162/f06f44fc9667be94a98feed9824ad4f1bb0c7a35bf9e32132fc012be76435739/general')
-#SECRET_KEY2 = os.getenv('CLOVA_SECRET_KEY2', 'S0daUXhPRFJWZG9QdFJvdWtudFlkT0dObENZVE95QUg=')
+API_URL = os.getenv("CLOVA_API_URL")
+SECRET_KEY2 = os.getenv("CLOVA_SECRET_KEY2")
 
 def run_ocr(image_path: str):
     
