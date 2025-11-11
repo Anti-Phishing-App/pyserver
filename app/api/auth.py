@@ -141,22 +141,102 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         Authorization: Bearer {access_token}
         ```
     """
-    user = authenticate_user(db, request.username, request.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
 
-    # 토큰 생성
+
+# ==========================================
+# 카카오 소셜 로그인
+# ==========================================
+import httpx
+from fastapi.responses import RedirectResponse
+from app.config import KAKAO_CLIENT_ID, KAKAO_REDIRECT_URI
+
+KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
+KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
+KAKAO_USER_INFO_URL = "https://kapi.kakao.com/v2/user/me"
+
+
+@router.get("/kakao/login", tags=["Social Login"])
+def kakao_login():
+    """
+    카카오 로그인 페이지로 리디렉션
+    """
+    redirect_url = (
+        f"{KAKAO_AUTH_URL}?client_id={KAKAO_CLIENT_ID}"
+        f"&redirect_uri={KAKAO_REDIRECT_URI}&response_type=code&scope=account_email"
+    )
+    return RedirectResponse(url=redirect_url)
+
+
+@router.get("/kakao/callback", response_model=TokenResponse, tags=["Social Login"])
+async def kakao_callback(code: str, db: Session = Depends(get_db)):
+    """
+    카카오 로그인 콜백 처리
+
+    카카오로부터 받은 인증 코드로 토큰을 받고, 사용자 정보를 조회하여
+    - 기존 사용자인 경우: 로그인 처리 후 JWT 토큰 발급
+    - 신규 사용자인 경우: 회원가입 후 JWT 토큰 발급
+    """
+    # 1. 인증 코드로 액세스 토큰 받기
+    token_data = {
+        "grant_type": "authorization_code",
+        "client_id": KAKAO_CLIENT_ID,
+        "redirect_uri": KAKAO_REDIRECT_URI,
+        "code": code,
+    }
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(KAKAO_TOKEN_URL, data=token_data)
+        token_response.raise_for_status()
+        kakao_token = token_response.json()
+
+    # 2. 액세스 토큰으로 사용자 정보 받기
+    headers = {"Authorization": f"Bearer {kakao_token['access_token']}"}
+    async with httpx.AsyncClient() as client:
+        user_info_response = await client.get(KAKAO_USER_INFO_URL, headers=headers)
+        user_info_response.raise_for_status()
+        user_info = user_info_response.json()
+
+    social_id = str(user_info["id"])
+    email = user_info["kakao_account"]["email"]
+    nickname = user_info["properties"]["nickname"]
+
+    # 3. 사용자 정보로 DB 조회 및 생성
+    user = db.query(User).filter(User.social_id == social_id, User.provider == "kakao").first()
+
+    if not user:
+        # 이메일로 기존 사용자 확인
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            # 기존 계정에 소셜 정보 연동
+            user.provider = "kakao"
+            user.social_id = social_id
+            db.commit()
+        else:
+            # 신규 사용자 생성
+            new_user = User(
+                username=f"kakao_{social_id}",  # 유니크한 username 생성
+                email=email,
+                full_name=nickname,
+                provider="kakao",
+                social_id=social_id,
+                is_active=True
+            )
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            user = new_user
+
+    # 4. JWT 토큰 발급
     access_token = create_access_token(
         data={"sub": user.username},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-
     refresh_token = create_refresh_token(
         data={"sub": user.username},
         secret_key=JWT_SECRET_KEY,
@@ -169,7 +249,6 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
-
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
@@ -242,3 +321,102 @@ def get_me(current_user: User = Depends(get_current_user)):
     현재 로그인한 사용자 정보 조회
     """
     return current_user
+
+
+# ==========================================
+# 카카오 소셜 로그인
+# ==========================================
+KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
+KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
+KAKAO_USER_INFO_URL = "https://kapi.kakao.com/v2/user/me"
+
+
+@router.get("/kakao/login", tags=["Social Login"])
+def kakao_login():
+    """
+    카카오 로그인 페이지로 리디렉션
+    """
+    redirect_url = (
+        f"{KAKAO_AUTH_URL}?client_id={KAKAO_CLIENT_ID}"
+        f"&redirect_uri={KAKAO_REDIRECT_URI}&response_type=code&scope=account_email"
+    )
+    return RedirectResponse(url=redirect_url)
+
+
+@router.get("/kakao/callback", response_model=TokenResponse, tags=["Social Login"])
+async def kakao_callback(code: str, db: Session = Depends(get_db)):
+    """
+    카카오 로그인 콜백 처리
+
+    카카오로부터 받은 인증 코드로 토큰을 받고, 사용자 정보를 조회하여
+    - 기존 사용자인 경우: 로그인 처리 후 JWT 토큰 발급
+    - 신규 사용자인 경우: 회원가입 후 JWT 토큰 발급
+    """
+    # 1. 인증 코드로 액세스 토큰 받기
+    token_data = {
+        "grant_type": "authorization_code",
+        "client_id": KAKAO_CLIENT_ID,
+        "redirect_uri": KAKAO_REDIRECT_URI,
+        "code": code,
+    }
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(KAKAO_TOKEN_URL, data=token_data)
+        token_response.raise_for_status()
+        kakao_token = token_response.json()
+
+    # 2. 액세스 토큰으로 사용자 정보 받기
+    headers = {"Authorization": f"Bearer {kakao_token['access_token']}"}
+    async with httpx.AsyncClient() as client:
+        user_info_response = await client.get(KAKAO_USER_INFO_URL, headers=headers)
+        user_info_response.raise_for_status()
+        user_info = user_info_response.json()
+
+    social_id = str(user_info["id"])
+    email = user_info["kakao_account"]["email"]
+    nickname = user_info["properties"]["nickname"]
+
+    # 3. 사용자 정보로 DB 조회 및 생성
+    user = db.query(User).filter(User.social_id == social_id, User.provider == "kakao").first()
+
+    if not user:
+        # 이메일로 기존 사용자 확인
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            # 기존 계정에 소셜 정보 연동
+            user.provider = "kakao"
+            user.social_id = social_id
+            db.commit()
+        else:
+            # 신규 사용자 생성
+            new_user = User(
+                username=f"kakao_{social_id}",  # 유니크한 username 생성
+                email=email,
+                full_name=nickname,
+                provider="kakao",
+                social_id=social_id,
+                is_active=True
+            )
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            user = new_user
+
+    # 4. JWT 토큰 발급
+    access_token = create_access_token(
+        data={"sub": user.username},
+        secret_key=JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+        expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(
+        data={"sub": user.username},
+        secret_key=JWT_SECRET_KEY,
+        algorithm=JWT_ALGORITHM,
+        expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }

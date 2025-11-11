@@ -62,9 +62,13 @@ class User(Base):
     )
     hashed_password = Column(
         String,
-        nullable=False,
+        nullable=True,  # 소셜 로그인을 위해 Null 허용
         comment="bcrypt로 해시된 비밀번호"
     )
+
+    # 소셜 로그인 정보
+    provider = Column(String, nullable=True, comment="소셜 로그인 제공자 (e.g., kakao)")
+    social_id = Column(String, nullable=True, unique=True, index=True, comment="소셜 ID")
 
     # 사용자 정보 (optional)
     full_name = Column(String, nullable=True, comment="사용자 이름")
