@@ -67,3 +67,14 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/users.db")
 KAKAO_CLIENT_ID = os.getenv("KAKAO_CLIENT_ID", "your-kakao-client-id")
 # 카카오 로그인 콜백 URL (카카오 개발자 센터에 등록된 리다이렉트 URI)
 KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI", "http://localhost:8000/auth/kakao/callback")
+
+
+# ==========================================
+# 소셜 로그인 설정 (네이버)
+# ==========================================
+# 네이버 개발자 센터에서 발급받은 Client ID
+NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "your-naver-client-id")
+# 네이버 개발자 센터에서 발급받은 Client Secret
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "your-naver-client-secret")
+# 네이버 로그인 콜백 URL (네이버 개발자 센터에 등록된 리다이렉트 URI)
+NAVER_REDIRECT_URI = os.getenv("NAVER_REDIRECT_URI", "http://localhost:8000/auth/naver/callback")
