@@ -11,9 +11,15 @@ from konlpy.tag import Okt
 import pandas as pd
 from collections import deque
 from pathlib import Path
+import os
+import time
+import uuid
+import json
 
 # 프로젝트 루트 경로
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+LOG_DIR = Path(os.getenv("PHISHING_LOG_DIR", BASE_DIR / "data" / "conversations"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def lazy_import_kobert():
@@ -75,6 +81,8 @@ class VoicePhishingDetector:
         self.model = None
         self._kobert_ready = False
         self._kobert_error: Optional[Exception] = None
+
+        self.kobert_threshold = float(os.getenv("PHISHING_KOBERT_THRESHOLD", "0.35"))
 
         # 단어 기반 탐지 초기화
         self.okt = Okt()
@@ -138,78 +146,103 @@ class VoicePhishingDetector:
             out = self.model(token_ids, valid_length, token_type_ids)
 
             logits = out.detach().cpu().numpy()
-            prediction = np.argmax(logits, axis=1)[0]
 
             # Confidence 계산 (softmax)
             exp_logits = np.exp(logits - np.max(logits))
             softmax = exp_logits / exp_logits.sum()
-            confidence = float(softmax[0][prediction])
+            prob_phishing = float(softmax[0][1])
 
-            is_phishing = bool(prediction == 1)
+            threshold = getattr(self, "kobert_threshold", float(os.getenv("PHISHING_KOBERT_THRESHOLD", "0.35")))
+            self.kobert_threshold = threshold
+            is_phishing = bool(prob_phishing >= threshold)
+            confidence = prob_phishing
 
             return is_phishing, confidence
 
-    def _calculate_risk_level(self, text: str) -> Tuple[int, float, str, List[str]]:
+    def _calculate_risk_level(self, text: str) -> Tuple[int, float, str, List[str], List[Dict]]:
         """
         단어 기반 위험도 계산
 
-        텍스트에서 위험 단어를 추출하고 가중치를 곱하여 위험도를 계산합니다.
+        텍스트에서 위험 단어를 추출하고 가중치를 합산하여 위험도를 계산합니다.
 
         Args:
             text: 분석할 텍스트
 
         Returns:
-            Tuple[int, float, str, List[str]]:
-                - level: 위험도 레벨 (1: 의심, 2: 경고, 3: 위험)
-                - probability: 위험 확률 (0 ~ 100)
+            Tuple[int, float, str, List[str], List[Dict]]:
+                - level: 위험도 레벨 (0: 안전, 1: 의심, 2: 경고, 3: 위험)
+                - probability: 위험 점수 (0 ~ 100)
                 - phishing_type: 범죄 유형 (대출사기형 or 수사기관사칭형)
                 - keywords: 탐지된 위험 단어 목록
+                - keyword_details: 각 단어의 가중치와 점수 상세 정보
         """
-        cnt = 1
-        type1_cnt = 1
-        type2_cnt = 1
+        RISK_THRESHOLD = 1.3  # 위험 단어 최소 가중치 (1.3 이상만 위험 단어로 간주)
+        risk_score = 0.0
+        type1_score = 0.0
+        type2_score = 0.0
         token_dict = {}
         detected_keywords = []
+        keyword_details = []  # 단어별 상세 정보
 
         # 형태소 분석 (명사, 부사만 추출)
         token_ko = pd.DataFrame(self.okt.pos(text), columns=['단어', '형태소'])
         token_ko = token_ko[(token_ko['단어'].str.len() > 1) & (token_ko.형태소.isin(['Noun', 'Adverb']))]
 
-        # 위험도 계산 (위험 단어의 가중치를 곱함)
+        # 위험도 계산 (위험 단어의 가중치를 합산)
         for word in token_ko.단어.values:
             if word in self.df.단어.values:
-                cnt *= float(self.df.loc[self.df.단어 == word, '확률'].iloc[0])
-                if word not in token_dict:
-                    token_dict[word] = 1
-                    detected_keywords.append(word)
-                else:
-                    token_dict[word] = token_dict.get(word) + 1
+                weight = float(self.df.loc[self.df.단어 == word, '확률'].iloc[0])
 
-        # 최대값 제한
-        if cnt > 100:
-            cnt = 100
+                # 고위험 단어만 카운트 (가중치 1.3 이상)
+                if weight >= RISK_THRESHOLD:
+                    # 가중치를 점수로 변환: (weight - 1.0) * 10으로 정규화
+                    # 예: 1.3 -> 3점, 1.5 -> 5점, 1.9 -> 9점
+                    word_score = (weight - 1.0) * 10
+                    risk_score += word_score
 
-        # 위험도 레벨 결정
-        if cnt <= 30:
-            level = 1  # 의심
-        elif cnt <= 60:
-            level = 2  # 경고
+                    if word not in token_dict:
+                        token_dict[word] = 1
+                        detected_keywords.append(word)
+                        # 상세 정보 추가
+                        keyword_details.append({
+                            'word': word,
+                            'weight': round(weight, 4),
+                            'score': round(word_score, 2)
+                        })
+                    else:
+                        token_dict[word] = token_dict.get(word) + 1
+
+        # 위험도 점수를 0-100 범위로 정규화
+        probability = min(risk_score, 100.0)
+
+        # 위험도 레벨 결정 (재조정된 임계값)
+        if probability < 3.0:
+            level = 0  # 안전 (위험 단어 없음)
+        elif probability < 8.0:
+            level = 1  # 의심 (위험 단어 1-2개)
+        elif probability < 15.0:
+            level = 2  # 경고 (위험 단어 3개 이상 또는 고위험 단어)
         else:
-            level = 3  # 위험
+            level = 3  # 위험 (위험 단어 다수 또는 매우 고위험 단어)
 
         # 범죄 유형 분류
-        token_df = pd.DataFrame(zip(token_dict.keys(), token_dict.values()), columns=['의심 단어', '횟수'])
-        token_df = token_df.sort_values(by='횟수', ascending=False)
+        if len(token_dict) == 0:
+            phishing_type = None
+        else:
+            token_df = pd.DataFrame(zip(token_dict.keys(), token_dict.values()), columns=['의심 단어', '횟수'])
+            token_df = token_df.sort_values(by='횟수', ascending=False)
 
-        for word, count in zip(token_df['의심 단어'].values, token_df['횟수'].values):
-            if word in self.type_df.type1_단어.values:
-                type1_cnt *= float(self.type_df.loc[self.type_df.type1_단어 == word, 'type1_확률'].iloc[0]) ** count
-            elif word in self.type_df.type2_단어.values:
-                type2_cnt *= float(self.type_df.loc[self.type_df.type2_단어 == word, 'type2_확률'].iloc[0]) ** count
+            for word, count in zip(token_df['의심 단어'].values, token_df['횟수'].values):
+                if word in self.type_df.type1_단어.values:
+                    weight = float(self.type_df.loc[self.type_df.type1_단어 == word, 'type1_확률'].iloc[0])
+                    type1_score += (weight - 1.0) * 10 * count
+                elif word in self.type_df.type2_단어.values:
+                    weight = float(self.type_df.loc[self.type_df.type2_단어 == word, 'type2_확률'].iloc[0])
+                    type2_score += (weight - 1.0) * 10 * count
 
-        phishing_type = '대출사기형' if type1_cnt > type2_cnt else '수사기관사칭형'
+            phishing_type = '대출사기형' if type1_score > type2_score else '수사기관사칭형'
 
-        return level, cnt, phishing_type, detected_keywords
+        return level, probability, phishing_type, detected_keywords, keyword_details
 
     def detect_immediate(self, text: str) -> Dict:
         """
@@ -227,29 +260,44 @@ class VoicePhishingDetector:
                 - probability: 위험 확률
                 - phishing_type: 범죄 유형
                 - keywords: 탐지된 위험 단어
+                - keyword_details: 각 단어의 가중치 정보
                 - method: 'word_based'
 
         Example:
             >>> result = detector.detect_immediate("대출 상담 도와드리겠습니다")
             >>> print(result['level'])  # 1, 2, 3
         """
-        if not text or len(text.strip()) < 5:
+        min_len = int(os.getenv("PHISHING_IMMEDIATE_MIN_CHARS", "3"))
+        normalized = (text or "").strip()
+        if not normalized or len(normalized) < min_len:
             return {
                 'level': 0,
                 'probability': 0.0,
                 'phishing_type': None,
                 'keywords': [],
+                'keyword_details': [],
                 'method': 'word_based'
             }
 
-        level, probability, phishing_type, keywords = self._calculate_risk_level(text)
+        level, probability, phishing_type, keywords, keyword_details = self._calculate_risk_level(normalized)
         return {
             'level': level,
             'probability': probability,
             'phishing_type': phishing_type,
             'keywords': keywords,
+            'keyword_details': keyword_details,
             'method': 'word_based'
         }
+
+    @staticmethod
+    def level_from_probability(probability: float) -> int:
+        if probability < 3.0:
+            return 0
+        if probability < 8.0:
+            return 1
+        if probability < 15.0:
+            return 2
+        return 3
 
     def detect_comprehensive(self, text: str) -> Dict:
         """
@@ -324,13 +372,15 @@ class VoicePhishingDetector:
 
         if is_phishing:
             # 보이스피싱으로 판단된 경우 위험도 계산
-            level, probability, phishing_type, keywords = self._calculate_risk_level(text)
+            level, probability, phishing_type, keywords, keyword_details = self._calculate_risk_level(text)
             return {
                 'is_phishing': True,
                 'level': level,
                 'probability': probability,
                 'phishing_type': phishing_type,
-                'confidence': confidence
+                'confidence': confidence,
+                'keywords': keywords,
+                'keyword_details': keyword_details
             }
         else:
             return {
@@ -382,8 +432,172 @@ class HybridPhishingSession:
         self.accumulated_text = ""
         self.kobert_result = None
         self.sentence_count = 0
+        self.min_sentences_for_kobert = int(os.getenv("PHISHING_KOBERT_MIN_SENTENCES", "1"))
+        self.min_chars_for_kobert = int(os.getenv("PHISHING_KOBERT_MIN_CHARS", "6"))
+        self.kobert_threshold = self._float_env("PHISHING_KOBERT_THRESHOLD", 0.35)
 
-    def add_sentence(self, sentence: str) -> Dict:
+        # 실시간 누적 상태
+        self.cumulative_probability = 0.0
+        self.cumulative_keywords: List[str] = []
+        self._keyword_counts: Dict[str, int] = {}
+        self.cumulative_keyword_details: List[Dict] = []
+        self._keyword_detail_keys: set[Tuple] = set()
+        self.cumulative_phishing_type: Optional[str] = None
+        self._risk_gain = self._float_env("PHISHING_IMMEDIATE_RISK_GAIN", 1.0)
+        self._safe_decay = self._float_env("PHISHING_IMMEDIATE_SAFE_DECAY", 1.5)
+        self.conversation_log: List[Dict] = []
+        self.session_id = uuid.uuid4().hex
+        self.started_at = time.time()
+        self.current_sentence = ""
+        self.force_final_enabled = os.getenv("PHISHING_FORCE_FINAL", "true").lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _float_env(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _merge_keywords(self, immediate_result: Dict):
+        for kw in immediate_result.get('keywords', []) or []:
+            kw = kw or ''
+            if not kw:
+                continue
+            count = self._keyword_counts.get(kw, 0) + 1
+            self._keyword_counts[kw] = count
+            self.cumulative_keywords.append(kw)
+        for detail in immediate_result.get('keyword_details', []) or []:
+            key = tuple(sorted(detail.items()))
+            if key not in self._keyword_detail_keys:
+                self._keyword_detail_keys.add(key)
+                self.cumulative_keyword_details.append(detail)
+
+    def _update_cumulative_immediate(self, immediate_result: Optional[Dict]) -> Dict:
+        if not immediate_result:
+            return self._current_cumulative_snapshot()
+
+        level = immediate_result.get('level', 0) or 0
+        probability = float(immediate_result.get('probability') or 0.0)
+
+        if level > 0:
+            keywords = immediate_result.get('keywords') or []
+            repeat_factor = 1.0
+            if keywords:
+                factors = []
+                for kw in keywords:
+                    kw = kw or ''
+                    if not kw:
+                        continue
+                    prev = self._keyword_counts.get(kw, 0)
+                    factors.append(1.0 / (1 + prev))
+                if factors:
+                    repeat_factor = sum(factors) / len(factors)
+            delta = probability * self._risk_gain * repeat_factor
+            self.cumulative_probability = min(100.0, self.cumulative_probability + delta)
+            phishing_type = immediate_result.get('phishing_type')
+            if phishing_type:
+                self.cumulative_phishing_type = phishing_type
+            self._merge_keywords(immediate_result)
+        else:
+            self.cumulative_probability = max(0.0, self.cumulative_probability - self._safe_decay)
+
+        return self._current_cumulative_snapshot()
+
+    def _current_cumulative_snapshot(self) -> Dict:
+        level = self.detector.level_from_probability(self.cumulative_probability)
+        return {
+            'level': level,
+            'probability': round(self.cumulative_probability, 2),
+            'phishing_type': self.cumulative_phishing_type,
+            'keywords': list(self.cumulative_keywords),
+            'keyword_details': list(self.cumulative_keyword_details),
+            'method': 'word_based_cumulative'
+        }
+
+    def process_fragment(self, sentence: str, is_final: bool) -> Dict:
+        """
+        실시간 조각을 처리하여 누적 위험도 및 종합 분석을 반환한다.
+        """
+        if not sentence or not sentence.strip():
+            return {
+                'chunk_immediate': None,
+                'immediate': self._current_cumulative_snapshot(),
+                'comprehensive': None
+            }
+
+        immediate_result = self.detector.detect_immediate(sentence)
+        cumulative_snapshot = self._update_cumulative_immediate(immediate_result)
+
+        self.current_sentence = (f"{self.current_sentence} {sentence}".strip()).strip()
+        effective_final = False
+        final_sentence = None
+        if self.current_sentence:
+            if bool(is_final):
+                effective_final = True
+                final_sentence = self.current_sentence
+                self.current_sentence = ""
+            elif self._should_force_finalize(self.current_sentence):
+                effective_final = True
+                final_sentence = self.current_sentence
+                self.current_sentence = ""
+
+        comprehensive_result = None
+        if effective_final and final_sentence:
+            final_immediate = self.detector.detect_immediate(final_sentence)
+            sentence_result = self.add_sentence(final_sentence, immediate_result=final_immediate)
+            comprehensive_result = sentence_result.get('comprehensive')
+            self._append_history(final_sentence, True, final_immediate, cumulative_snapshot)
+        else:
+            self._append_history(sentence, False, immediate_result, cumulative_snapshot)
+
+        return {
+            'chunk_immediate': immediate_result,
+            'immediate': cumulative_snapshot,
+            'comprehensive': comprehensive_result,
+            'history': self.get_conversation_log(),
+            'session_id': self.session_id
+        }
+
+    def _should_force_finalize(self, sentence: str) -> bool:
+        if not self.force_final_enabled:
+            return False
+        text = (sentence or "").strip()
+        if len(text) < self.min_chars_for_kobert:
+            return False
+        if text[-1:] in {".", "!", "?", "다", "요"}:
+            return True
+        if text.count(" ") >= 2:
+            return True
+        return False
+
+    def _append_history(self, sentence: str, is_final: bool, chunk_immediate: Dict, cumulative_snapshot: Dict):
+        if not is_final or not sentence:
+            return
+        self.conversation_log.append({
+            'text': sentence,
+            'is_final': True,
+            'timestamp': time.time(),
+            'chunk_immediate': chunk_immediate,
+            'immediate': cumulative_snapshot
+        })
+
+    def get_conversation_log(self) -> List[Dict]:
+        return list(self.conversation_log)
+
+    def _persist_conversation(self):
+        if not self.conversation_log:
+            return
+        record = {
+            'session_id': self.session_id,
+            'started_at': self.started_at,
+            'ended_at': time.time(),
+            'log': self.conversation_log,
+        }
+        target = LOG_DIR / f"{self.session_id}.json"
+        with target.open('w', encoding='utf-8') as fp:
+            json.dump(record, fp, ensure_ascii=False, indent=2)
+
+    def add_sentence(self, sentence: str, immediate_result: Optional[Dict] = None) -> Dict:
         """
         문장 추가 및 분석
 
@@ -415,12 +629,12 @@ class HybridPhishingSession:
         self.sentence_count += 1
 
         # 즉시 응답 (단어 기반) - 항상 실행
-        immediate_result = self.detector.detect_immediate(sentence)
+        immediate_result = immediate_result or self.detector.detect_immediate(sentence)
 
         # 누적 분석 (KoBERT) - 누적 텍스트 길이가 충분할 때마다 실행
         comprehensive_result = None
         accumulated_text = self.accumulated_text.strip()
-        if len(accumulated_text) >= 10:
+        if (self.sentence_count >= max(1, self.min_sentences_for_kobert) or len(accumulated_text) >= self.min_chars_for_kobert):
             comprehensive_result = self.detector.detect_comprehensive(accumulated_text)
             self.kobert_result = comprehensive_result
 
@@ -440,10 +654,22 @@ class HybridPhishingSession:
 
     def reset(self):
         """세션 초기화 (통화 종료 시 호출)"""
+        self._persist_conversation()
         self.sentence_buffer.clear()
         self.accumulated_text = ""
         self.kobert_result = None
         self.sentence_count = 0
+        self.cumulative_probability = 0.0
+        self.cumulative_keywords.clear()
+        self.cumulative_keyword_details.clear()
+        self._keyword_detail_keys.clear()
+        self.cumulative_phishing_type = None
+        self.conversation_log.clear()
+        self._keyword_counts.clear()
+        self.session_id = uuid.uuid4().hex
+        self.started_at = time.time()
+        self.conversation_log.clear()
+        self.current_sentence = ""
 
 
 # ==========================================
