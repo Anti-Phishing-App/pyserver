@@ -35,6 +35,20 @@
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#0e1829; border:1px solid #20314a; color:#b8d7ff; font-size:12px }
     .result { background:#0c1118; border:1px dashed #223146; border-radius:12px; padding:12px; margin-top:10px }
     .transcript { color: var(--text); }
+    .live-line { margin-top:8px; font-size:14px; color:#c8d8f5 }
+    .highlight { color: var(--acc); font-weight:600; }
+    .risk-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:10px; }
+    .risk-cell { border:1px solid #1f2a3b; border-radius:10px; padding:10px; background:#0b1424; }
+    .risk-cell .label { font-size:12px; color:#8aa5cf; text-transform:uppercase; letter-spacing:.05em }
+    .risk-cell .value { font-size:22px; font-weight:600; margin:6px 0; color:#ffffff }
+    .risk-cell .desc { font-size:13px; color:#9db4e0 }
+    .risk-cell .keywords { font-size:12px; color:#a8bedf; margin-top:6px; min-height:16px }
+    .history { margin-top:12px; background:#0c151f; border:1px solid #1f3047; border-radius:12px; padding:12px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:#b0c8ec; max-height:220px; overflow:auto }
+    .history h3 { margin:0 0 6px; font-size:14px; color:#d6e4ff }
+    .history-entry { margin-bottom:8px; border-bottom:1px dashed rgba(255,255,255,0.05); padding-bottom:6px }
+    .history-entry:last-child { border-bottom:none; margin-bottom:0; padding-bottom:0 }
+    .history-entry .label { font-size:12px; color:#86a2c7 }
     .metrics { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:8px }
     .metric { font-size:12px; color:#c6d9f7; border:1px solid #223146; background:#0b1424; padding:4px 8px; border-radius:10px }
     .banner { margin-top:10px; padding:10px 12px; border-radius:12px; font-size:14px; display:none }
@@ -48,7 +62,7 @@
 <body>
   <header>
     <h1>🎙️ 실시간 음성 스트리밍 테스트</h1>
-    <p class="sub">마이크 → 16k PCM(<b>20ms×5 = 100ms 배치</b>) → WebSocket(<code>/ws/transcribe/stream</code>) → 인식 결과</p>
+    <p class="sub">마이크 → 16k PCM(<b>20ms×5 = 100ms 배치</b>) → WebSocket(<code>/api/transcribe/ws</code>) → 인식 결과</p>
   </header>
 
   <main>
@@ -87,8 +101,35 @@
       </div>
 
       <div class="result" id="resultBox">
-        <div><strong>결과(실시간):</strong></div>
+        <div><strong>결과(실시간)</strong></div>
+        <div class="live-line">현재 partial: <span id="partialText" class="highlight">-</span></div>
         <div id="transcript" class="transcript"></div>
+      </div>
+
+      <div class="result" id="riskBox">
+        <div><strong>위험도 모니터</strong></div>
+        <div class="risk-grid">
+          <div class="risk-cell">
+            <div class="label">누적(세션)</div>
+            <div class="value" id="cumProb">0%</div>
+            <div class="desc" id="cumInfo">level 0 · 유형 없음</div>
+            <div class="keywords" id="cumKeywords"></div>
+          </div>
+          <div class="risk-cell">
+            <div class="label">최근 조각</div>
+            <div class="value" id="chunkProb">-</div>
+            <div class="desc" id="chunkInfo">데이터 없음</div>
+          </div>
+          <div class="risk-cell">
+            <div class="label">KoBERT 종합</div>
+            <div class="value" id="kobertVal">-</div>
+            <div class="desc" id="kobertInfo">누적 문장 대기 중</div>
+          </div>
+        </div>
+      </div>
+      <div class="history" id="historyBox">
+        <h3>누적 문장</h3>
+        <p id="historyList">(대기 중)</p>
       </div>
 
       <div style="margin-top:10px">
@@ -117,11 +158,20 @@
     const wsStatus  = document.getElementById('wsStatus');
     const logEl     = document.getElementById('log');
     const transcriptEl = document.getElementById('transcript');
+    const partialEl = document.getElementById('partialText');
     const bannerErr = document.getElementById('bannerErr');
     const bannerOk  = document.getElementById('bannerOk');
     const mDur      = document.getElementById('mDur');
     const mBytes    = document.getElementById('mBytes');
     const mRate     = document.getElementById('mRate');
+    const cumProbEl = document.getElementById('cumProb');
+    const cumInfoEl = document.getElementById('cumInfo');
+    const cumKeywordsEl = document.getElementById('cumKeywords');
+    const chunkProbEl = document.getElementById('chunkProb');
+    const chunkInfoEl = document.getElementById('chunkInfo');
+    const kobertValEl = document.getElementById('kobertVal');
+    const kobertInfoEl = document.getElementById('kobertInfo');
+    const historyListEl = document.getElementById('historyList');
 
     // ------------ State ------------
     let ws = null;
@@ -129,6 +179,13 @@
     let workletNode = null;
     let stream = null;
     let fullTranscript = '';
+    let startTs = 0;
+    let timerId = null;
+    let sentBytes = 0;
+    let lastBytes = 0;
+    let stopping = false;
+
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
     // ------------ Utils ------------
     function showErr(msg) { bannerErr.style.display='block'; bannerErr.textContent = '⚠ ' + msg; }
@@ -148,7 +205,7 @@
     }
     function defaultWsUrl(lang) {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      return `${proto}://${location.host}/ws/transcribe/stream?lang=${encodeURIComponent(lang)}`;
+      return `${proto}://${location.host}/api/transcribe/ws?sr=16000&lang=${encodeURIComponent(lang)}`;
     }
     function fmtDur(ms) {
       const s = Math.floor(ms/1000), m = Math.floor(s/60), ss = s%60;
@@ -156,6 +213,7 @@
     }
     function startMeter() {
       startTs = Date.now(); sentBytes = 0; lastBytes = 0;
+      if (timerId) clearInterval(timerId);
       timerId = setInterval(()=>{
         const dur = Date.now() - startTs;
         mDur.textContent = fmtDur(dur);
@@ -167,6 +225,109 @@
     }
     function stopMeter() { if (timerId) clearInterval(timerId); timerId = null; }
 
+    function describeType(t) { return t || '유형 없음'; }
+    function fmtProb(prob) {
+      const n = Number(prob);
+      if (Number.isNaN(n)) return '-';
+      return `${n.toFixed(1)}%`;
+    }
+    function updateCumulative(data) {
+      if (!data) {
+        cumProbEl.textContent = '-';
+        cumInfoEl.textContent = '데이터 없음';
+        cumKeywordsEl.textContent = '';
+        return;
+      }
+      const prob = Number(data.probability ?? 0);
+      cumProbEl.textContent = fmtProb(prob);
+      const level = data.level ?? 0;
+      cumInfoEl.textContent = `level ${level} · ${describeType(data.phishing_type)}`;
+      const keywords = (data.keywords || []).filter(Boolean);
+      cumKeywordsEl.textContent = keywords.length ? `키워드: ${keywords.join(', ')}` : '';
+    }
+    function updateChunk(data) {
+      if (!data) {
+        chunkProbEl.textContent = '-';
+        chunkInfoEl.textContent = '데이터 없음';
+        return;
+      }
+      chunkProbEl.textContent = fmtProb(data.probability ?? 0);
+      const level = data.level ?? 0;
+      const type = data.phishing_type ? ` · ${data.phishing_type}` : '';
+      chunkInfoEl.textContent = `level ${level}${type}`;
+    }
+    function updateKobert(data) {
+      if (!data) {
+        kobertValEl.textContent = '-';
+        kobertInfoEl.textContent = '누적 문장 대기 중';
+        return;
+      }
+      const conf = Number(data.confidence ?? 0) * 100;
+      kobertValEl.textContent = data.is_phishing ? `위험 (${conf.toFixed(1)}%)` : `정상 (${conf.toFixed(1)}%)`;
+      const len = data.analyzed_length ?? 0;
+      kobertInfoEl.textContent = `분석 길이 ${len}자 · ${data.method || 'kobert'}`;
+    }
+
+    function renderHistory(entries) {
+      if (!Array.isArray(entries)) { historyListEl.textContent = '(대기 중)'; return; }
+      const combined = entries
+        .filter(e => e && e.text)
+        .map(e => e.text.trim())
+        .filter(Boolean);
+      historyListEl.textContent = combined.length ? combined.join(' ') : '(대기 중)';
+    }
+
+    function handleTranscript(kind, text) {
+      if (kind === 'partial') {
+        partialEl.textContent = text || '';
+        return;
+      }
+      if (kind === 'final') {
+        partialEl.textContent = '';
+        if (text) {
+          fullTranscript = (fullTranscript ? `${fullTranscript} ` : '') + text;
+          transcriptEl.textContent = fullTranscript;
+        }
+      }
+    }
+
+    function wsMessageHandler(e) {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.debug) {
+          log('DEBUG: ' + msg.debug);
+          return;
+        }
+        if (msg.error) {
+          showErr(msg.message || msg.error);
+          log('Server error: ' + JSON.stringify(msg));
+          return;
+        }
+        if (!msg.kind) {
+          log('Server: ' + e.data);
+          return;
+        }
+        if (msg.kind === 'state') {
+          log(`STATE: ${msg.text || ''}`);
+          return;
+        }
+        if (msg.kind === 'partial' || msg.kind === 'final') {
+          handleTranscript(msg.kind, msg.text || '');
+          updateCumulative(msg.immediate || null);
+          if (msg.chunk_immediate) updateChunk(msg.chunk_immediate);
+          if (msg.history) renderHistory(msg.history);
+        } else if (msg.kind === 'risk') {
+          updateCumulative(msg.immediate || null);
+          updateKobert(msg.comprehensive || null);
+          if (msg.history) renderHistory(msg.history);
+        } else {
+          log(`MSG(${msg.kind}): ${JSON.stringify(msg)}`);
+        }
+      } catch (err) {
+        log('Error processing message: ' + err);
+      }
+    }
+
     wsUrlEl.value = defaultWsUrl(langEl.value);
     langEl.addEventListener('change', () => {
       try { const u = new URL(wsUrlEl.value); u.searchParams.set('lang', langEl.value); wsUrlEl.value = u.toString(); }
@@ -175,35 +336,33 @@
 
     async function start() {
       hideErr();
+      if (ws && ws.readyState === 1) {
+        showErr('이미 연결되어 있습니다.');
+        return;
+      }
       btnStart.disabled = true; btnStop.disabled = false;
-      fullTranscript = ''; 
+      fullTranscript = '';
       transcriptEl.textContent = '';
+      partialEl.textContent = '-';
+      updateCumulative(null);
+      updateChunk(null);
+      updateKobert(null);
+      historyListEl.innerHTML = '';
       const url = wsUrlEl.value.trim();
 
       ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => { setWS(true); log('WS ✅ connected'); showOk('WebSocket 연결 성공'); startMeter(); };
-      ws.onclose = () => { setWS(false); log('WS ❌ closed'); stop(true); showErr('WebSocket 연결이 종료되었습니다.'); stopMeter(); };
-      ws.onerror = (e) => { log('WS error: ' + (e?.message || e)); showErr('WebSocket 오류: ' + (e?.message || 'unknown')); };
-      
-      ws.onmessage = (e) => {
-        try {
-          const result = JSON.parse(e.data);
-          
-          if (result.debug || result.error) {
-            log('Server Message: ' + e.data);
-            return;
-          }
-
-          if (result.text !== undefined && result.position !== undefined) {
-            const before = fullTranscript.substring(0, result.position);
-            fullTranscript = before + result.text;
-            transcriptEl.textContent = fullTranscript;
-          }
-        } catch (err) {
-          log('Error processing message: ' + err);
+      ws.onclose = async () => {
+        setWS(false);
+        log('WS ❌ closed');
+        if (!stopping) {
+          showErr('WebSocket 연결이 종료되었습니다.');
+          await stop(true);
         }
       };
+      ws.onerror = (e) => { log('WS error: ' + (e?.message || e)); showErr('WebSocket 오류: ' + (e?.message || 'unknown')); };
+      ws.onmessage = wsMessageHandler;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -213,15 +372,11 @@
       } catch (err) {
         log('마이크 권한 실패: ' + err);
         showErr('마이크 권한을 허용해 주세요.');
-        stop();
+        await stop(true);
         return;
       }
 
-      const SR_OUT = 16000;
-      const FRAME_SAMPLES = 320;
-      const FRAME_BYTES   = FRAME_SAMPLES * 2;
-      const PACK_FRAMES   = 5;
-
+      const PACK_FRAMES = 5;
       try {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
         const workletCode = `
@@ -267,7 +422,7 @@
           }
         };
         source.connect(workletNode);
-        log(`AudioWorklet on. in:${audioCtx.sampleRate} → out:${SR_OUT}Hz S16LE (20ms×${PACK_FRAMES}=${20*PACK_FRAMES}ms batch)`);
+        log(`AudioWorklet on. in:${audioCtx.sampleRate} → out:16000Hz S16LE (20ms×${PACK_FRAMES}=${20*PACK_FRAMES}ms batch)`);
       } catch (err) {
         log('AudioWorklet failed, falling back. Error: ' + err);
       }
@@ -276,19 +431,43 @@
     }
 
     async function stop(silent=false) {
+      if (stopping) return;
+      stopping = true;
       btnStart.disabled = false; btnStop.disabled = true;
       if (!silent) log('정지 중…');
 
-      try { if (workletNode) workletNode.disconnect(); } catch {}
-      workletNode = null;
-      try { if (audioCtx) await audioCtx.close(); } catch {}
-      audioCtx = null;
-      try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch {}
-      stream = null;
-      try { if (ws && ws.readyState === 1) ws.close(); } catch {}
-      ws = null;
-      stopMeter();
-      if (!silent) { log('🔚 stopped'); }
+      try {
+        try { if (workletNode) workletNode.disconnect(); } catch {}
+        workletNode = null;
+        try { if (audioCtx) await audioCtx.close(); } catch {}
+        audioCtx = null;
+        try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch {}
+        stream = null;
+        if (ws) {
+          try {
+            if (ws.readyState === 1) {
+              ws.send("__END__");
+              await sleep(150);
+              ws.close();
+            } else if (ws.readyState === 0) {
+              ws.close();
+            }
+          } catch (err) {
+            console.warn(err);
+          }
+        }
+      } finally {
+        ws = null;
+        stopMeter();
+        setWS(false);
+        partialEl.textContent = '-';
+        updateCumulative(null);
+        updateChunk(null);
+        updateKobert(null);
+        historyListEl.innerHTML = '';
+        if (!silent) { log('🔚 stopped'); }
+        stopping = false;
+      }
     }
 
     btnStart.addEventListener('click', start);

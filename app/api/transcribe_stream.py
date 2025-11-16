@@ -54,13 +54,16 @@ async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)
                 t.cancel()
 
 async def _recv_audio(ws: WebSocket, stt):
-    while True:
-        msg = await ws.receive()
-        if (b := msg.get("bytes")) is not None:
-            await stt.feed(b)
-        elif (t := msg.get("text")) is not None and t == "__END__":
-            await stt.close()
-            break
+    try:
+        while True:
+            msg = await ws.receive()
+            if (b := msg.get("bytes")) is not None:
+                await stt.feed(b)
+            elif (t := msg.get("text")) is not None and t == "__END__":
+                await stt.close(force_grpc=False)
+                break
+    except WebSocketDisconnect:
+        await stt.close(force_grpc=True)
 
 async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
     """
@@ -74,27 +77,29 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
             if not text:
                 continue
 
-            # 1) 즉시(단어 기반) — 한 문장에도 빠르게
-            immediate = session.detector.detect_immediate(text)
-            await _send_json(ws, {
+            fragment = session.process_fragment(text, is_final)
+            payload = {
                 "kind": "partial" if not is_final else "final",
                 "text": text,
-                "immediate": immediate,  # level/probability/keywords 등 포함
+                "immediate": fragment["immediate"],
                 "t": _now()
-            })
+            }
+            if fragment.get("chunk_immediate"):
+                payload["chunk_immediate"] = fragment["chunk_immediate"]
+            if fragment.get("history"):
+                payload["history"] = fragment["history"]
+            await _send_json(ws, payload)
 
-            # 2) 문장 경계일 때 누적(KoBERT)까지
-            if is_final:
-                both = session.add_sentence(text)  # 내부에서 detect_immediate + (>=3문장 시) detect_comprehensive
-                # comprehensive가 있을 수도/없을 수도 있음(3문장 미만)
-                if both.get("comprehensive"):
-                    await _send_json(ws, {
-                        "kind": "risk",
-                        "text": text,
-                        "immediate": both["immediate"],
-                        "comprehensive": both["comprehensive"],  # is_phishing/confidence 포함
-                        "t": _now()
-                    })
+            comprehensive = fragment.get("comprehensive")
+            if comprehensive:
+                await _send_json(ws, {
+                    "kind": "risk",
+                    "text": text,
+                    "immediate": fragment["immediate"],
+                    "comprehensive": comprehensive,  # is_phishing/confidence 포함
+                    "t": _now(),
+                    "history": fragment.get("history")
+                })
 
 @router.get("/ws-info")
 def ws_info():
