@@ -12,9 +12,6 @@ import pandas as pd
 from collections import deque
 from pathlib import Path
 
-# Transformers tokenizer 사용
-from transformers import BertTokenizer
-
 # 프로젝트 루트 경로
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -71,39 +68,41 @@ class VoicePhishingDetector:
 
     def __init__(self):
         """보이스피싱 탐지기 초기화"""
-        # Lazy import KoBERT dependencies
-        BERTClassifier, get_kobert_model, get_tokenizer = lazy_import_kobert()
-
-        # Store classes for later use
-        self.BERTClassifier = BERTClassifier
-
-        # KoBERT 모델 초기화 (transformers 기반)
-        self.bertmodel = get_kobert_model()
-        self.tokenizer = get_tokenizer()
         self.device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        self.BERTClassifier = None
+        self.bertmodel = None
+        self.tokenizer = None
         self.model = None
+        self._kobert_ready = False
+        self._kobert_error: Optional[Exception] = None
 
         # 단어 기반 탐지 초기화
         self.okt = Okt()
         self.df = pd.read_csv(BASE_DIR / "data/csv/500_가중치.csv", encoding='utf-8')
         self.type_df = pd.read_csv(BASE_DIR / "data/csv/type_token_가중치.csv", encoding='utf-8')
 
-        # 모델 로드
-        self._load_model()
-
-    def _load_model(self):
+    def _ensure_kobert_ready(self):
         """
-        KoBERT 모델 가중치 로드
-
-        학습된 모델 파일(train.pt)을 로드하여 추론 모드로 설정합니다.
-
-        Raises:
-            FileNotFoundError: 모델 파일이 존재하지 않는 경우
+        KoBERT 모델이 필요한 시점에만 로딩하여 네트워크 의존성을 늦춘다.
         """
-        self.model = self.BERTClassifier(self.bertmodel, dr_rate=0.4).to(self.device)
-        model_path = BASE_DIR / "data/models/kobert/train.pt"
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device), strict=False)
-        self.model.eval()
+        if self._kobert_ready:
+            return
+        if self._kobert_error:
+            raise self._kobert_error
+
+        try:
+            BERTClassifier, get_kobert_model, get_tokenizer = lazy_import_kobert()
+            self.BERTClassifier = BERTClassifier
+            self.bertmodel = get_kobert_model()
+            self.tokenizer = get_tokenizer()
+            self.model = self.BERTClassifier(self.bertmodel, dr_rate=0.4).to(self.device)
+            model_path = BASE_DIR / "data/models/kobert/train.pt"
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device), strict=False)
+            self.model.eval()
+            self._kobert_ready = True
+        except Exception as exc:  # KoBERT 초기화 실패 시 예외를 기억해 두고 재사용
+            self._kobert_error = exc
+            raise
 
     def _predict_kobert(self, text: str) -> Tuple[bool, float]:
         """
@@ -117,7 +116,8 @@ class VoicePhishingDetector:
                 - is_phishing: True이면 보이스피싱, False이면 일반 전화
                 - confidence: 예측 신뢰도 (0.0 ~ 1.0)
         """
-        # Transformers tokenizer 사용
+        self._ensure_kobert_ready()
+
         inputs = self.tokenizer(
             text,
             return_tensors='pt',
@@ -178,7 +178,7 @@ class VoicePhishingDetector:
         # 위험도 계산 (위험 단어의 가중치를 곱함)
         for word in token_ko.단어.values:
             if word in self.df.단어.values:
-                cnt *= float(self.df.loc[self.df.단어 == word, '확률'])
+                cnt *= float(self.df.loc[self.df.단어 == word, '확률'].iloc[0])
                 if word not in token_dict:
                     token_dict[word] = 1
                     detected_keywords.append(word)
@@ -203,9 +203,9 @@ class VoicePhishingDetector:
 
         for word, count in zip(token_df['의심 단어'].values, token_df['횟수'].values):
             if word in self.type_df.type1_단어.values:
-                type1_cnt *= float(self.type_df.loc[self.type_df.type1_단어 == word, 'type1_확률']) ** count
+                type1_cnt *= float(self.type_df.loc[self.type_df.type1_단어 == word, 'type1_확률'].iloc[0]) ** count
             elif word in self.type_df.type2_단어.values:
-                type2_cnt *= float(self.type_df.loc[self.type_df.type2_단어 == word, 'type2_확률']) ** count
+                type2_cnt *= float(self.type_df.loc[self.type_df.type2_단어 == word, 'type2_확률'].iloc[0]) ** count
 
         phishing_type = '대출사기형' if type1_cnt > type2_cnt else '수사기관사칭형'
 
@@ -348,7 +348,7 @@ class HybridPhishingSession:
 
     실시간 음성 인식 스트리밍에 최적화된 하이브리드 탐지 방식:
     - 즉시 응답: 문장 단위 단어 기반 탐지 (빠름)
-    - 누적 분석: 3-5문장 쌓일 때마다 KoBERT 분석 (정확함)
+    - 누적 분석: 누적 텍스트가 10자 이상일 때마다 KoBERT 분석 (정확함)
 
     Attributes:
         detector: VoicePhishingDetector 인스턴스
@@ -388,7 +388,7 @@ class HybridPhishingSession:
         문장 추가 및 분석
 
         새로운 문장을 추가하고 즉시 단어 기반 분석을 수행합니다.
-        3문장 이상 쌓이면 KoBERT 종합 분석도 수행합니다.
+        누적 텍스트가 충분해지면 KoBERT 종합 분석도 수행합니다.
 
         Args:
             sentence: 새로 추가할 문장
@@ -396,7 +396,7 @@ class HybridPhishingSession:
         Returns:
             Dict:
                 - immediate: 단어 기반 즉시 분석 결과
-                - comprehensive: KoBERT 종합 분석 결과 (3문장 이상일 때만)
+                - comprehensive: KoBERT 종합 분석 결과 (누적 텍스트 10자 이상일 때)
 
         Example:
             >>> result = session.add_sentence("계좌번호 알려주세요")
@@ -417,10 +417,11 @@ class HybridPhishingSession:
         # 즉시 응답 (단어 기반) - 항상 실행
         immediate_result = self.detector.detect_immediate(sentence)
 
-        # 누적 분석 (KoBERT) - 3문장 이상 쌓였을 때만 실행
+        # 누적 분석 (KoBERT) - 누적 텍스트 길이가 충분할 때마다 실행
         comprehensive_result = None
-        if self.sentence_count >= 3:
-            comprehensive_result = self.detector.detect_comprehensive(self.accumulated_text)
+        accumulated_text = self.accumulated_text.strip()
+        if len(accumulated_text) >= 10:
+            comprehensive_result = self.detector.detect_comprehensive(accumulated_text)
             self.kobert_result = comprehensive_result
 
         return {

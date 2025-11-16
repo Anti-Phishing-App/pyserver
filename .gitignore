@@ -57,6 +57,6 @@ tmp/
 test_*.py
 
 # # 데이터 및 모델 파일
-data/
+data/models/
 app/ml/kobert_classifier/*.pt
 app/ml/kobert_classifier/model/

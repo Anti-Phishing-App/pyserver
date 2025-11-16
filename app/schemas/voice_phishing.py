@@ -17,7 +17,7 @@ from typing import Optional, List
 class TextAnalysisRequest(BaseModel):
     """텍스트 기반 보이스피싱 분석 요청"""
     text: str = Field(..., min_length=10, description="분석할 텍스트 (최소 10자)")
-    method: str = Field("comprehensive", description="분석 방법 [immediate, comprehensive, hybrid]")
+    method: str = Field("hybrid", description="분석 방법 [immediate, comprehensive, hybrid]")
 
 
 class ImmediateResult(BaseModel):
