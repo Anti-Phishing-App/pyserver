@@ -4,7 +4,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import asyncio, os, time
 from typing import Optional, Tuple
 
-# ==== 당신이 이미 가진 탐지기 모듈 사용 ====
 # 파일 경로/모듈명은 실제 위치에 맞춰 조정하세요.
 from app.services.voice_phishing_service import get_detector, create_session, HybridPhishingSession
 
