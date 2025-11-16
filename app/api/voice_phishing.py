@@ -125,7 +125,7 @@ async def analyze_text(request: TextAnalysisRequest):
 async def analyze_audio_file(
     media: UploadFile = File(..., description="음성 파일 (MP3, WAV, MP4 등)"),
     language: str = Form("ko-KR", description="인식 언어"),
-    analysis_method: str = Form("hybrid", description="분석 방법 [immediate, comprehensive, hybrid]")
+    analysis_method: str = Form("hybrid", description="분석 방법 [항상 hybrid 처리]")
 ):
     """
     통화 녹음 파일 보이스피싱 탐지 (STT + 분석)
@@ -209,28 +209,22 @@ async def analyze_audio_file(
         comprehensive_result = None
         warning_message = None
 
-        # Immediate 분석 (단어 기반)
-        if analysis_method in ["immediate", "hybrid"]:
-            result = detector.detect_immediate(text)
-            immediate_result = ImmediateResult(**result)
+        # 음성 분석은 항상 하이브리드 실행
+        result = detector.detect_immediate(text)
+        immediate_result = ImmediateResult(**result)
 
-            # 위험도에 따른 경고 메시지
-            if immediate_result.level == 3:
-                warning_message = "⚠️ 위험: 보이스피싱일 가능성이 매우 높습니다!"
-            elif immediate_result.level == 2:
-                warning_message = "⚠️ 경고: 의심스러운 단어가 감지되었습니다."
-            elif immediate_result.level == 1:
-                warning_message = "ℹ️ 주의: 일부 단어에 주의가 필요합니다."
+        if immediate_result.level == 3:
+            warning_message = "⚠️ 위험: 보이스피싱일 가능성이 매우 높습니다!"
+        elif immediate_result.level == 2:
+            warning_message = "⚠️ 경고: 의심스러운 단어가 감지되었습니다."
+        elif immediate_result.level == 1:
+            warning_message = "ℹ️ 주의: 일부 단어에 주의가 필요합니다."
 
-        # Comprehensive 분석 (KoBERT)
-        if analysis_method in ["comprehensive", "hybrid"]:
-            result = detector.detect_comprehensive(text)
-            comprehensive_result = ComprehensiveResult(**result)
-
-            # KoBERT 결과에 따른 경고 메시지
-            if comprehensive_result.is_phishing:
-                confidence_pct = comprehensive_result.confidence * 100
-                warning_message = f"🚨 보이스피싱 탐지! (신뢰도: {confidence_pct:.1f}%)"
+        comprehensive = detector.detect_comprehensive(text)
+        comprehensive_result = ComprehensiveResult(**comprehensive)
+        if comprehensive_result.is_phishing:
+            confidence_pct = comprehensive_result.confidence * 100
+            warning_message = f"🚨 보이스피싱 탐지! (신뢰도: {confidence_pct:.1f}%)"
 
         return {
             "transcription": {
