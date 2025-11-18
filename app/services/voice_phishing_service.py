@@ -102,7 +102,7 @@ class VoicePhishingDetector:
             self.tokenizer = get_tokenizer()
             self.model = self.BERTClassifier(self.bertmodel, dr_rate=0.4).to(self.device)
             model_path = BASE_DIR / "data/models/kobert/train.pt"
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device), strict=False)
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False), strict=False)
             self.model.eval()
             self._kobert_ready = True
         except Exception as exc:  # KoBERT 초기화 실패 시 예외를 기억해 두고 재사용
