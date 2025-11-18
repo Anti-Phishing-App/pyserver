@@ -14,12 +14,9 @@ from pathlib import Path
 import os
 import time
 import uuid
-import json
 
 # 프로젝트 루트 경로
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-LOG_DIR = Path(os.getenv("PHISHING_LOG_DIR", BASE_DIR / "data" / "conversations"))
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def lazy_import_kobert():
@@ -584,18 +581,6 @@ class HybridPhishingSession:
     def get_conversation_log(self) -> List[Dict]:
         return list(self.conversation_log)
 
-    def _persist_conversation(self):
-        if not self.conversation_log:
-            return
-        record = {
-            'session_id': self.session_id,
-            'started_at': self.started_at,
-            'ended_at': time.time(),
-            'log': self.conversation_log,
-        }
-        target = LOG_DIR / f"{self.session_id}.json"
-        with target.open('w', encoding='utf-8') as fp:
-            json.dump(record, fp, ensure_ascii=False, indent=2)
 
     def add_sentence(self, sentence: str, immediate_result: Optional[Dict] = None) -> Dict:
         """
@@ -654,7 +639,6 @@ class HybridPhishingSession:
 
     def reset(self):
         """세션 초기화 (통화 종료 시 호출)"""
-        self._persist_conversation()
         self.sentence_buffer.clear()
         self.accumulated_text = ""
         self.kobert_result = None
