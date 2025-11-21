@@ -57,7 +57,7 @@ def create_access_token(
     Create a JWT access token
 
     Args:
-        data: Data to encode in the token (usually {"sub": username})
+        data: Data to encode in the token (usually {"sub": email})
         secret_key: Secret key for encoding
         algorithm: JWT algorithm (default: HS256)
         expires_delta: Token expiration time (default: 30 minutes)
@@ -86,7 +86,7 @@ def create_refresh_token(
     Create a JWT refresh token
 
     Args:
-        data: Data to encode in the token (usually {"sub": username})
+        data: Data to encode in the token (usually {"sub": email})
         secret_key: Secret key for encoding
         algorithm: JWT algorithm (default: HS256)
         expires_delta: Token expiration time (default: 7 days)
@@ -164,15 +164,15 @@ def get_current_user(
     token = credentials.credentials
     payload = decode_token(token, JWT_SECRET_KEY, JWT_ALGORITHM)
 
-    username: str = payload.get("sub")
-    if username is None:
+    email: str = payload.get("sub")
+    if email is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -186,13 +186,13 @@ def get_current_user(
     return user
 
 
-def authenticate_user(db: Session, username: str, password: str):
+def authenticate_user(db: Session, email: str, password: str):
     """
-    Authenticate a user by username and password
+    Authenticate a user by email and password
 
     Args:
         db: Database session
-        username: Username
+        email: Email address
         password: Plain text password
 
     Returns:
@@ -200,7 +200,7 @@ def authenticate_user(db: Session, username: str, password: str):
     """
     from app.models.user import User
 
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.email == email).first()
     if not user:
         return None
     if not verify_password(password, user.hashed_password):

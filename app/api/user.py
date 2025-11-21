@@ -21,8 +21,8 @@ from app.models.user import User
 from app.schemas.user import (
     UserResponse,
     UserUpdateRequest,
-    FindUsernameRequest,
-    FindUsernameResponse,
+    FindEmailRequest,
+    FindEmailResponse,
     ResetPasswordRequest,
     MessageResponse
 )
@@ -125,49 +125,55 @@ def delete_my_account(
     return {"message": "Account successfully deactivated"}
 
 
-@router.post("/find-username", response_model=FindUsernameResponse)
-def find_username(request: FindUsernameRequest, db: Session = Depends(get_db)):
+@router.post("/find-email", response_model=FindEmailResponse)
+def find_email(request: FindEmailRequest, db: Session = Depends(get_db)):
     """
-    아이디 찾기
+    이메일 찾기
 
-    이메일을 통해 사용자 아이디를 찾습니다.
-    회원가입 시 등록한 이메일로 아이디를 조회합니다.
+    전화번호와 이름을 통해 이메일 주소를 찾습니다.
+    회원가입 시 등록한 전화번호와 이름으로 이메일을 조회합니다.
 
     Args:
-        request: 아이디 찾기 요청 (email)
+        request: 이메일 찾기 요청 (phone, full_name)
         db: 데이터베이스 세션 (자동 주입)
 
     Returns:
-        FindUsernameResponse: 찾은 아이디와 가입일
+        FindEmailResponse: 찾은 이메일과 가입일
 
     Raises:
-        HTTPException 404: 해당 이메일로 가입된 계정 없음
+        HTTPException 404: 해당 전화번호와 이름으로 가입된 계정 없음
 
     Example:
         ```bash
-        curl -X POST "http://localhost:8000/user/find-username" \\
+        curl -X POST "http://localhost:8000/user/find-email" \\
              -H "Content-Type: application/json" \\
-             -d '{"email": "john@example.com"}'
+             -d '{
+               "phone": "010-1234-5678",
+               "full_name": "John Doe"
+             }'
         ```
 
         Response:
         ```json
         {
-          "username": "john_doe",
+          "email": "john@example.com",
           "created_at": "2025-10-26T10:00:00"
         }
         ```
     """
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(User).filter(
+        User.phone == request.phone,
+        User.full_name == request.full_name
+    ).first()
 
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No user found with this email"
+            detail="No user found with this phone number and name"
         )
 
     return {
-        "username": user.username,
+        "email": user.email,
         "created_at": user.created_at
     }
 
@@ -177,21 +183,21 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     """
     비밀번호 재설정
 
-    이메일과 아이디를 확인하여 비밀번호를 재설정합니다.
+    이메일을 확인하여 비밀번호를 재설정합니다.
 
     Warning:
         실제 서비스에서는 이메일 인증 코드 발송 등의 추가 보안 절차가 필요합니다.
-        현재는 단순히 이메일+아이디 조합만 확인합니다.
+        현재는 단순히 이메일만 확인합니다.
 
     Args:
-        request: 비밀번호 재설정 요청 (email, username, new_password)
+        request: 비밀번호 재설정 요청 (email, new_password)
         db: 데이터베이스 세션 (자동 주입)
 
     Returns:
         MessageResponse: 성공 메시지
 
     Raises:
-        HTTPException 404: 해당 이메일+아이디 조합의 계정 없음
+        HTTPException 404: 해당 이메일의 계정 없음
 
     Example:
         ```bash
@@ -199,7 +205,6 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
              -H "Content-Type: application/json" \\
              -d '{
                "email": "john@example.com",
-               "username": "john_doe",
                "new_password": "newpassword123!"
              }'
         ```
@@ -212,15 +217,12 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
         ```
     """
     # 사용자 찾기
-    user = db.query(User).filter(
-        User.email == request.email,
-        User.username == request.username
-    ).first()
+    user = db.query(User).filter(User.email == request.email).first()
 
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No user found with this email and username combination"
+            detail="No user found with this email"
         )
 
     # 비밀번호 재설정
