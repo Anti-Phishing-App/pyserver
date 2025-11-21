@@ -18,8 +18,7 @@ class User(Base):
 
     Attributes:
         id (int): 사용자 고유 ID (Primary Key, 자동 증가)
-        username (str): 사용자 아이디 (unique, 로그인 시 사용)
-        email (str): 이메일 주소 (unique, 아이디/비밀번호 찾기 시 사용)
+        email (str): 이메일 주소 (unique, 로그인 시 사용)
         hashed_password (str): bcrypt로 해시된 비밀번호 (평문 저장 금지!)
         full_name (str, optional): 사용자 이름
         phone (str, optional): 전화번호
@@ -33,7 +32,6 @@ class User(Base):
         >>>
         >>> db = SessionLocal()
         >>> new_user = User(
-        ...     username="john_doe",
         ...     email="john@example.com",
         ...     hashed_password=get_password_hash("mypassword123")
         ... )
@@ -46,19 +44,12 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True, comment="사용자 고유 ID")
 
     # 로그인 정보 (unique 제약조건)
-    username = Column(
-        String,
-        unique=True,
-        index=True,
-        nullable=False,
-        comment="사용자 아이디 (로그인 시 사용)"
-    )
     email = Column(
         String,
         unique=True,
         index=True,
         nullable=False,
-        comment="이메일 주소"
+        comment="이메일 주소 (로그인 시 사용)"
     )
     hashed_password = Column(
         String,
@@ -96,4 +87,4 @@ class User(Base):
 
     def __repr__(self):
         """객체를 문자열로 표현 (디버깅용)"""
-        return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
+        return f"<User(id={self.id}, email='{self.email}')>"

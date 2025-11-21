@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import gluonnlp as nlp
 import numpy as np
 
@@ -29,11 +30,11 @@ def load_dataset(predict_sentence):
     another_test = BERTDataset(dataset_another, 0, 1, tok, max_len=64, pad=True, pair=False)
     return DataLoader(another_test, batch_size = 32, num_workers = 5) # torch 형식 변환
 
-def inference(predict_sentence): # input = 보이스피싱 탐지하고자 하는 sentence
+def inference(predict_sentence, temperature=1.5): # input = 보이스피싱 탐지하고자 하는 sentence
     print("※ KoBERT 추론 시작 ※")
 
     test_dataloader = load_dataset(predict_sentence)
-    
+
     for batch_id, (token_ids, valid_length, segment_ids, label) in enumerate(test_dataloader):
         token_ids = token_ids.long().to(device)
         segment_ids = segment_ids.long().to(device)
@@ -47,11 +48,19 @@ def inference(predict_sentence): # input = 보이스피싱 탐지하고자 하�
         test_eval = []
         for i in out:
             logits = i
-            logits = logits.detach().cpu().numpy()
+            # Temperature scaling을 적용하여 확률을 완만하게 만듦
+            scaled_logits = logits / temperature
+            # Softmax를 적용하여 확률로 변환
+            probabilities = F.softmax(scaled_logits, dim=0)
+            probabilities = probabilities.detach().cpu().numpy()
 
-            if np.argmax(logits) == 0:
+            phishing_prob = probabilities[1]  # 보이스피싱 확률
+
+            print(f"▶ 일반 음성 확률: {probabilities[0]:.2%}, 보이스피싱 확률: {phishing_prob:.2%}")
+
+            if np.argmax(probabilities) == 0:
                 test_eval.append("일반 음성 전화")
-            elif np.argmax(logits) == 1:
+            elif np.argmax(probabilities) == 1:
                 test_eval.append("보이스피싱 전화")
                 result = True
 

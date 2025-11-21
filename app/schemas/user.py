@@ -9,7 +9,6 @@ from datetime import datetime
 class UserResponse(BaseModel):
     """사용자 정보 응답"""
     id: int
-    username: str
     email: str
     full_name: Optional[str] = None
     phone: Optional[str] = None
@@ -22,7 +21,6 @@ class UserResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "id": 1,
-                "username": "john_doe",
                 "email": "john@example.com",
                 "full_name": "John Doe",
                 "phone": "010-1234-5678",
@@ -51,27 +49,29 @@ class UserUpdateRequest(BaseModel):
         }
 
 
-class FindUsernameRequest(BaseModel):
-    """아이디 찾기 요청"""
-    email: EmailStr = Field(..., description="가입 시 사용한 이메일")
+class FindEmailRequest(BaseModel):
+    """이메일 찾기 요청"""
+    phone: str = Field(..., description="가입 시 사용한 전화번호")
+    full_name: str = Field(..., description="가입 시 사용한 이름")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "email": "john@example.com"
+                "phone": "010-1234-5678",
+                "full_name": "John Doe"
             }
         }
 
 
-class FindUsernameResponse(BaseModel):
-    """아이디 찾기 응답"""
-    username: str = Field(..., description="찾은 사용자 아이디")
+class FindEmailResponse(BaseModel):
+    """이메일 찾기 응답"""
+    email: str = Field(..., description="찾은 이메일 주소")
     created_at: datetime = Field(..., description="가입 날짜")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "username": "john_doe",
+                "email": "john@example.com",
                 "created_at": "2025-10-26T10:00:00"
             }
         }
@@ -80,14 +80,12 @@ class FindUsernameResponse(BaseModel):
 class ResetPasswordRequest(BaseModel):
     """비밀번호 재설정 요청"""
     email: EmailStr = Field(..., description="가입 시 사용한 이메일")
-    username: str = Field(..., description="사용자 아이디")
     new_password: str = Field(..., min_length=8, max_length=100, description="새 비밀번호 (최소 8자)")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "email": "john@example.com",
-                "username": "john_doe",
                 "new_password": "newsecurepass123!"
             }
         }

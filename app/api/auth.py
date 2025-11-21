@@ -25,7 +25,8 @@ from app.schemas.auth import (
     SignupRequest,
     LoginRequest,
     TokenResponse,
-    RefreshTokenRequest
+    RefreshTokenRequest,
+    AdditionalInfoRequest
 )
 from app.schemas.user import UserResponse, MessageResponse
 from app.config import (
@@ -46,35 +47,26 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
     새로운 사용자 계정을 생성합니다.
 
     Args:
-        request: 회원가입 요청 데이터 (username, email, password 등)
+        request: 회원가입 요청 데이터 (email, password 등)
         db: 데이터베이스 세션 (자동 주입)
 
     Returns:
         UserResponse: 생성된 사용자 정보 (비밀번호 제외)
 
     Raises:
-        HTTPException 400: 이미 사용 중인 username 또는 email
+        HTTPException 400: 이미 사용 중인 email
 
     Example:
         ```bash
         curl -X POST "http://localhost:8000/auth/signup" \\
              -H "Content-Type: application/json" \\
              -d '{
-               "username": "john_doe",
                "email": "john@example.com",
                "password": "securepass123!",
                "full_name": "John Doe"
              }'
         ```
     """
-    # 중복 체크 - username
-    existing_user = db.query(User).filter(User.username == request.username).first()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-
     # 중복 체크 - email
     existing_email = db.query(User).filter(User.email == request.email).first()
     if existing_email:
@@ -85,7 +77,6 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
 
     # 새 사용자 생성
     new_user = User(
-        username=request.username,
         email=request.email,
         hashed_password=get_password_hash(request.password),
         full_name=request.full_name,
@@ -107,24 +98,24 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
     사용자 인증 후 액세스 토큰과 리프레시 토큰을 발급합니다.
     """
-    user = authenticate_user(db, request.username, request.password)
+    user = authenticate_user(db, request.email, request.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # 토큰 생성
     access_token = create_access_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
     refresh_token = create_refresh_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
@@ -154,15 +145,15 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
             detail="Invalid token type"
         )
 
-    username = payload.get("sub")
-    if not username:
+    email = payload.get("sub")
+    if not email:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
 
     # 사용자 존재 확인
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -171,14 +162,14 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
 
     # 새 토큰 발급
     new_access_token = create_access_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
 
     new_refresh_token = create_refresh_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
@@ -200,6 +191,49 @@ def logout(current_user: User = Depends(get_current_user)):
     (서버는 stateless이므로 클라이언트가 토큰을 삭제하면 됩니다)
     """
     return {"message": "Successfully logged out. Please delete the token on client side."}
+
+
+@router.post("/additional-info", response_model=UserResponse)
+def update_additional_info(
+    request: AdditionalInfoRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    소셜 로그인 후 추가 정보 입력
+
+    소셜 로그인으로 가입한 사용자가 전화번호, 이름 등 추가 정보를 입력합니다.
+
+    Args:
+        request: 추가 정보 (phone, full_name)
+        current_user: 현재 인증된 사용자
+        db: 데이터베이스 세션
+
+    Returns:
+        UserResponse: 업데이트된 사용자 정보
+
+    Example:
+        ```bash
+        curl -X POST "http://localhost:8000/auth/additional-info" \\
+             -H "Authorization: Bearer {access_token}" \\
+             -H "Content-Type: application/json" \\
+             -d '{
+               "phone": "010-1234-5678",
+               "full_name": "홍길동"
+             }'
+        ```
+    """
+    # 추가 정보 업데이트
+    if request.phone is not None:
+        current_user.phone = request.phone
+
+    if request.full_name is not None:
+        current_user.full_name = request.full_name
+
+    db.commit()
+    db.refresh(current_user)
+
+    return current_user
 
 
 @router.get("/me", response_model=UserResponse)
@@ -269,18 +303,25 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
     # 3. 사용자 정보로 DB 조회 및 생성
     user = db.query(User).filter(User.social_id == social_id, User.provider == "kakao").first()
 
+    requires_info = False
+
     if not user:
         # 이메일로 기존 사용자 확인
         user = db.query(User).filter(User.email == email).first()
         if user:
-            # 기존 계정에 소셜 정보 연동
+            # 기존 계정에 소셜 정보 연동 (다중 소셜 로그인 지원)
+            # 단, provider가 이미 설정되어 있으면 에러
+            if user.provider and user.provider != "kakao":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"This email is already linked to {user.provider} login"
+                )
             user.provider = "kakao"
             user.social_id = social_id
             db.commit()
         else:
             # 신규 사용자 생성
             new_user = User(
-                username=f"kakao_{social_id}",  # 유니크한 username 생성
                 email=email,
                 full_name=nickname,
                 provider="kakao",
@@ -291,16 +332,22 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(new_user)
             user = new_user
+            # 전화번호가 없으면 추가 정보 입력 필요
+            requires_info = True
+
+    # 기존 사용자도 전화번호가 없으면 추가 정보 필요
+    if not user.phone:
+        requires_info = True
 
     # 4. JWT 토큰 발급
     access_token = create_access_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
@@ -309,7 +356,8 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "requires_additional_info": requires_info
     }
 
 
@@ -371,15 +419,23 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
     # 3. 사용자 정보로 DB 조회 및 생성
     user = db.query(User).filter(User.social_id == social_id, User.provider == "naver").first()
 
+    requires_info = False
+
     if not user:
         user = db.query(User).filter(User.email == email).first()
         if user:
+            # 기존 계정에 소셜 정보 연동 (다중 소셜 로그인 지원)
+            # 단, provider가 이미 설정되어 있으면 에러
+            if user.provider and user.provider != "naver":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"This email is already linked to {user.provider} login"
+                )
             user.provider = "naver"
             user.social_id = social_id
             db.commit()
         else:
             new_user = User(
-                username=f"naver_{social_id}",
                 email=email,
                 full_name=nickname,
                 provider="naver",
@@ -390,16 +446,22 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(new_user)
             user = new_user
+            # 전화번호가 없으면 추가 정보 입력 필요
+            requires_info = True
+
+    # 기존 사용자도 전화번호가 없으면 추가 정보 필요
+    if not user.phone:
+        requires_info = True
 
     # 4. JWT 토큰 발급
     access_token = create_access_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     refresh_token = create_refresh_token(
-        data={"sub": user.username},
+        data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
         algorithm=JWT_ALGORITHM,
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
@@ -408,6 +470,7 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "requires_additional_info": requires_info
     }
 
