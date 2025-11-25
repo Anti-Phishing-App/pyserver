@@ -1,7 +1,7 @@
 """음성 인식 API (CLOVA Speech)"""
 import json
 import asyncio
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request
 from pydantic import BaseModel, Field
 import httpx
 import grpc
@@ -39,9 +39,12 @@ async def transcribe_file_upload(
 
     headers = {"X-CLOVASPEECH-API-KEY": CLOVA_SECRET_KEY}
 
+    callback_url = "http://13.125.25.96:8000/api/transcribe/callback"
+
     params_dict = {
         "language": language,
         "completion": completion,
+        "callback": callback_url,
         "wordAlignment": True,
         "fullText": True,
     }
@@ -65,6 +68,25 @@ async def transcribe_file_upload(
         except httpx.RequestError as e:
             raise HTTPException(status_code=500, detail=f"CLOVA API 요청 실패: {e}")
 
+
+@router.post("/api/transcribe/callback")
+async def clova_callback(request: Request):
+    """
+    CLOVA Speech async 결과를 수신하는 콜백 엔드포인트
+    """
+    try:
+        payload = await request.json()
+        print("🔥 [CLOVA CALLBACK RECEIVED] ====================================")
+        print(payload)
+        print("=================================================================")
+
+        # 필요하면 DB 저장 or 파일 저장 가능
+        # 여기서는 수신만 확인
+        return {"status": "ok", "received": True}
+
+    except Exception as e:
+        print(f"[Callback Parse Error] {e}")
+        raise HTTPException(500, f"Callback error: {e}")
 
 @router.get("/api/transcribe/status/{token}")
 async def transcribe_status(token: str):
