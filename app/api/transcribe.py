@@ -71,18 +71,29 @@ async def transcribe_file_upload(
 
 @router.post("/api/transcribe/callback")
 async def clova_callback(request: Request):
-    """
-    CLOVA Speech async 결과를 수신하는 콜백 엔드포인트
-    """
     try:
-        payload = await request.json()
-        print("🔥 [CLOVA CALLBACK RECEIVED] ====================================")
-        print(payload)
-        print("=================================================================")
+        raw_body = await request.body()
 
-        # 필요하면 DB 저장 or 파일 저장 가능
-        # 여기서는 수신만 확인
-        return {"status": "ok", "received": True}
+        # 1) 빈 body 처리
+        if not raw_body:
+            print("[CLOVA CALLBACK RECEIVED] (EMPTY BODY)")
+            return {"status": "ok", "received": True, "empty": True}
+
+        text_body = raw_body.decode("utf-8", errors="ignore").strip()
+
+        # 2) JSON인지 먼저 판단
+        try:
+            payload = json.loads(text_body)
+            print("[CLOVA CALLBACK RECEIVED] (JSON) =======================")
+            print(payload)
+            print("=================================================================")
+            return {"status": "ok", "received": True}
+        except json.JSONDecodeError:
+            # 3) JSON 아님 = 텍스트 콜백
+            print("[CLOVA CALLBACK RECEIVED] (TEXT) =======================")
+            print(text_body)
+            print("=================================================================")
+            return {"status": "ok", "received": True, "text": text_body}
 
     except Exception as e:
         print(f"[Callback Parse Error] {e}")
