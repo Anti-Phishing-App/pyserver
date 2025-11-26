@@ -78,11 +78,18 @@ async def transcribe_ws(
 
     try:
         await asyncio.gather(recv_task, send_task)
+
     except WebSocketDisconnect:
         # 클라이언트가 끊은 경우
         logger.info(f"[WS DISCONNECT] client={client}")
+
+    except asyncio.CancelledError:
+        # gRPC 스트림 / 태스크가 취소되면서 올라오는 CancelledError
+        logger.info(f"[WS CANCELLED] client={client} - streaming cancelled")
+        # 여기서 다시 raise 안 하고 조용히 종료
+
     finally:
-        # STT 스트림 정리 (여기서도 한 번 더 close 시도 - idempotent)
+        # STT 스트림 정리 (여기서만 close 호출하도록 통일)
         try:
             await stt.close()
         except Exception as e:
