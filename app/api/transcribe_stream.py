@@ -5,6 +5,7 @@ import asyncio
 import os
 import time
 import logging
+import contextlib
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
@@ -81,7 +82,7 @@ async def transcribe_ws(
         # 클라이언트가 끊은 경우
         logger.info(f"[WS DISCONNECT] client={client}")
     finally:
-        # STT 스트림 정리 (여기서만 close 호출하도록 통일)
+        # STT 스트림 정리 (여기서도 한 번 더 close 시도 - idempotent)
         try:
             await stt.close()
         except Exception as e:
@@ -100,8 +101,8 @@ async def _recv_audio(ws: WebSocket, stt):
     """
     클라이언트에서 오는 PCM 바이너리 / 제어 메시지를 STT로 넘기는 루프.
     - 바이너리: stt.feed(...)
-    - "__END__": 입력 종료 후 루프 종료
-    - disconnect: 루프 종료
+    - "__END__": STT 종료(close) 후 루프 종료
+    - disconnect: STT 종료(close) 후 루프 종료
     """
     try:
         while True:
@@ -118,7 +119,9 @@ async def _recv_audio(ws: WebSocket, stt):
 
             # 클라이언트가 연결을 끊은 경우 (ASGI 메시지 타입 기준)
             if msg_type == "websocket.disconnect":
-                logger.info("_recv_audio: websocket.disconnect 수신 → 종료")
+                logger.info("_recv_audio: websocket.disconnect 수신 → STT close 후 종료")
+                with contextlib.suppress(Exception):
+                    await stt.close()
                 break
 
             # 정상 수신 메시지
@@ -129,15 +132,18 @@ async def _recv_audio(ws: WebSocket, stt):
                 elif (t := msg.get("text")) is not None:
                     # 제어 텍스트 프레임 처리
                     if t == "__END__":
-                        logger.info('_recv_audio: "__END__" 수신 → 입력 종료')
-                        # 여기서는 feed(None) 같은 건 하지 않고,
-                        # stt 측이 None 종료를 사용하는 경우라면 stt_adapter 쪽에서 처리
+                        logger.info('_recv_audio: "__END__" 수신 → STT close 후 종료')
+                        # 🔴 여기서 STT 종료 신호 보내기 (GrpcSTTStream.close가 audio_q에 None 넣어줌)
+                        with contextlib.suppress(Exception):
+                            await stt.close()
                         break
 
     except WebSocketDisconnect:
         # 다른 Starlette/FastAPI 버전에서는 여기로 들어올 수 있음
         logger.info("_recv_audio: WebSocketDisconnect 발생")
-    # stt.close() 는 transcribe_ws 의 finally 에서 한 번만 호출
+        with contextlib.suppress(Exception):
+            await stt.close()
+    # transcribe_ws 의 finally 에서도 한 번 더 close() 시도 (중복 호출 안전)
 
 
 async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str):
