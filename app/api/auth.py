@@ -289,16 +289,27 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
         token_response.raise_for_status()
         kakao_token = token_response.json()
 
-    # 2. 액세스 토큰으로 사용자 정보 받기
+    # 2. 사용자 정보 받기
     headers = {"Authorization": f"Bearer {kakao_token['access_token']}"}
     async with httpx.AsyncClient() as client:
         user_info_response = await client.get(KAKAO_USER_INFO_URL, headers=headers)
         user_info_response.raise_for_status()
         user_info = user_info_response.json()
 
-    social_id = str(user_info["id"])
-    email = user_info["kakao_account"]["email"]
-    nickname = user_info["properties"]["nickname"]
+    # 사용자 식별자
+    social_id = str(user_info.get("id"))
+
+    # email (scope: account_email 필수)
+    email = user_info.get("kakao_account", {}).get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email permission is required.")
+
+    # nickname (optional)
+    nickname = (
+            user_info.get("properties", {}).get("nickname")
+            or user_info.get("kakao_account", {}).get("profile", {}).get("nickname")
+            or "카카오사용자"
+    )
 
     # 3. 사용자 정보로 DB 조회 및 생성
     user = db.query(User).filter(User.social_id == social_id, User.provider == "kakao").first()
