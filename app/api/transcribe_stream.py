@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import logging
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
@@ -15,14 +16,21 @@ from app.services.voice_phishing_service import (
 )
 from app.services.stt_adapter import WebsocketSTTStream, GrpcSTTStream
 
+# gRPC STT 에러 잡기용
+from grpc.aio import AioRpcError
+
 router = APIRouter(prefix="/api/transcribe", tags=["Transcribe (Realtime)"])
+
+logger = logging.getLogger("transcribe_stream")
 
 
 def _stt_factory(sample_rate: int):
     provider = os.getenv("STT_PROVIDER", "grpc")  # "grpc" | "ws"
     if provider == "ws":
         url = os.getenv("STT_WS_URL", "wss://stt.example.com/stream")
+        logger.info(f"STT_PROVIDER=ws, url={url}")
         return WebsocketSTTStream(url, sample_rate)
+    logger.info("STT_PROVIDER=grpc")
     return GrpcSTTStream(sample_rate)
 
 
@@ -31,15 +39,31 @@ def _now() -> float:
 
 
 async def _send_json(ws: WebSocket, payload: dict):
-    # pydantic 없이 바로 dict→json 문자열로 보내도 됨
+    """공통 JSON 송신 + 간단 로깅"""
     import json
 
-    await ws.send_text(json.dumps(payload, ensure_ascii=False))
+    data = json.dumps(payload, ensure_ascii=False)
+    # 너무 많이 찍히면 noisy 할 수 있으니, 필요하면 주석 처리
+    if payload.get("kind") in {"partial", "final", "risk", "error", "state"}:
+        logger.debug(f"[WS->CLIENT] {data}")
+    await ws.send_text(data)
 
 
 @router.websocket("/ws")
-async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)):
+async def transcribe_ws(
+    ws: WebSocket,
+    sr: int = Query(16000, ge=8000, le=48000),
+    lang: str = Query("ko-KR"),
+    client: str = Query("unknown"),
+):
+    """
+    WebSocket 엔드포인트
+    - sr: sample rate (기본 16k)
+    - lang: ko-KR, en-US ...
+    - client: "web", "android" 등 구분용 (디버깅에 도움)
+    """
     await ws.accept()
+    logger.info(f"[WS OPEN] client={client} sr={sr} lang={lang}")
     await _send_json(ws, {"kind": "state", "text": "ready", "t": _now()})
 
     # 전역 단일 모델 로딩→ 세션 생성
@@ -49,20 +73,19 @@ async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)
     stt = _stt_factory(sr)
 
     recv_task = asyncio.create_task(_recv_audio(ws, stt))
-    send_task = asyncio.create_task(_pump(ws, stt, session))
+    send_task = asyncio.create_task(_pump(ws, stt, session, client))
 
     try:
         await asyncio.gather(recv_task, send_task)
     except WebSocketDisconnect:
         # 클라이언트가 끊은 경우
-        pass
+        logger.info(f"[WS DISCONNECT] client={client}")
     finally:
         # STT 스트림 정리 (여기서만 close 호출하도록 통일)
         try:
             await stt.close()
-        except Exception:
-            # 이미 닫혀 있거나 에러가 나도 세션은 정리
-            pass
+        except Exception as e:
+            logger.warning(f"stt.close() 에서 예외 발생: {e!r}")
 
         session.reset()
 
@@ -70,12 +93,14 @@ async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)
             if not t.done():
                 t.cancel()
 
+        logger.info(f"[WS CLOSED] client={client}")
+
 
 async def _recv_audio(ws: WebSocket, stt):
     """
     클라이언트에서 오는 PCM 바이너리 / 제어 메시지를 STT로 넘기는 루프.
     - 바이너리: stt.feed(...)
-    - "__END__": STT 입력 종료 후 루프 종료
+    - "__END__": 입력 종료 후 루프 종료
     - disconnect: 루프 종료
     """
     try:
@@ -84,7 +109,8 @@ async def _recv_audio(ws: WebSocket, stt):
             # RuntimeError('Cannot call "receive"...') 를 던지므로 방어
             try:
                 msg = await ws.receive()
-            except RuntimeError:
+            except RuntimeError as e:
+                logger.warning(f"_recv_audio RuntimeError: {e}")
                 # 이미 disconnect 메시지를 처리한 뒤 추가 receive 호출된 경우
                 break
 
@@ -92,6 +118,7 @@ async def _recv_audio(ws: WebSocket, stt):
 
             # 클라이언트가 연결을 끊은 경우 (ASGI 메시지 타입 기준)
             if msg_type == "websocket.disconnect":
+                logger.info("_recv_audio: websocket.disconnect 수신 → 종료")
                 break
 
             # 정상 수신 메시지
@@ -102,53 +129,99 @@ async def _recv_audio(ws: WebSocket, stt):
                 elif (t := msg.get("text")) is not None:
                     # 제어 텍스트 프레임 처리
                     if t == "__END__":
-                        # STT 입력 종료 요청
+                        logger.info('_recv_audio: "__END__" 수신 → 입력 종료')
+                        # 여기서는 feed(None) 같은 건 하지 않고,
+                        # stt 측이 None 종료를 사용하는 경우라면 stt_adapter 쪽에서 처리
                         break
 
     except WebSocketDisconnect:
         # 다른 Starlette/FastAPI 버전에서는 여기로 들어올 수 있음
-        pass
+        logger.info("_recv_audio: WebSocketDisconnect 발생")
     # stt.close() 는 transcribe_ws 의 finally 에서 한 번만 호출
 
 
-async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
+async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str):
     """
     STT에서 (text, is_final) 스트림을 받아
     - partial: word 기반 즉시 분석만 수행해 전송
     - final:   즉시 분석 + 누적(KoBERT) 분석까지 수행해 전송
     """
-    async with stt:
-        async for text, is_final in stt.transcripts():
-            text = (text or "").strip()
-            if not text:
-                continue
+    try:
+        async with stt:
+            async for text, is_final in stt.transcripts():
+                text = (text or "").strip()
+                if not text:
+                    continue
 
-            fragment = session.process_fragment(text, is_final)
-            payload = {
-                "kind": "partial" if not is_final else "final",
-                "text": text,
-                "immediate": fragment["immediate"],
-                "t": _now(),
-            }
-            if fragment.get("chunk_immediate"):
-                payload["chunk_immediate"] = fragment["chunk_immediate"]
-            if fragment.get("history"):
-                payload["history"] = fragment["history"]
-            await _send_json(ws, payload)
+                fragment = session.process_fragment(text, is_final)
+                payload = {
+                    "kind": "partial" if not is_final else "final",
+                    "text": text,
+                    "immediate": fragment["immediate"],
+                    "t": _now(),
+                }
+                if fragment.get("chunk_immediate"):
+                    payload["chunk_immediate"] = fragment["chunk_immediate"]
+                if fragment.get("history"):
+                    payload["history"] = fragment["history"]
+                await _send_json(ws, payload)
 
-            comprehensive = fragment.get("comprehensive")
-            if comprehensive:
-                await _send_json(
-                    ws,
-                    {
-                        "kind": "risk",
-                        "text": text,
-                        "immediate": fragment["immediate"],
-                        "comprehensive": comprehensive,  # is_phishing/confidence 포함
-                        "t": _now(),
-                        "history": fragment.get("history"),
-                    },
-                )
+                comprehensive = fragment.get("comprehensive")
+                if comprehensive:
+                    await _send_json(
+                        ws,
+                        {
+                            "kind": "risk",
+                            "text": text,
+                            "immediate": fragment["immediate"],
+                            "comprehensive": comprehensive,  # is_phishing/confidence 포함
+                            "t": _now(),
+                            "history": fragment.get("history"),
+                        },
+                    )
+
+    except AioRpcError as e:
+        # 🔴 클로바 STT 쪽에서 io exception / UNAVAILABLE 등 던질 때 여기로 옴
+        code = e.code()
+        detail = e.details()
+        logger.error(
+            f"[STT RPC ERROR] client={client} code={getattr(code, 'name', code)} detail={detail}"
+        )
+        # 클라이언트(웹/앱)에게도 에러를 알려줌
+        try:
+            await _send_json(
+                ws,
+                {
+                    "kind": "error",
+                    "error": "stt_unavailable",
+                    "grpc_status": getattr(code, "name", str(code)),
+                    "detail": detail or "STT backend unavailable",
+                    "t": _now(),
+                },
+            )
+        except Exception:
+            # WS가 이미 끊겼을 수도 있음
+            pass
+
+    except WebSocketDisconnect:
+        # 클라이언트가 먼저 끊은 경우
+        logger.info(f"_pump: WebSocketDisconnect (client={client})")
+
+    except Exception as e:
+        # 기타 예외
+        logger.exception(f"_pump: unexpected error (client={client})")
+        try:
+            await _send_json(
+                ws,
+                {
+                    "kind": "error",
+                    "error": "internal_error",
+                    "detail": str(e),
+                    "t": _now(),
+                },
+            )
+        except Exception:
+            pass
 
 
 @router.get("/ws-info")
