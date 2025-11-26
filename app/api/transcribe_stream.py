@@ -1,17 +1,21 @@
 # app/api/transcribe_stream.py
 from __future__ import annotations
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-import asyncio, os, time
+
+import asyncio
+import os
+import time
 from typing import Optional, Tuple
 
-# 파일 경로/모듈명은 실제 위치에 맞춰 조정하세요.
-from app.services.voice_phishing_service import get_detector, create_session, HybridPhishingSession
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
-# STT 어댑터 (WS / gRPC 중 택1)
+from app.services.voice_phishing_service import (
+    get_detector,
+    create_session,
+    HybridPhishingSession,
+)
 from app.services.stt_adapter import WebsocketSTTStream, GrpcSTTStream
 
 router = APIRouter(prefix="/api/transcribe", tags=["Transcribe (Realtime)"])
-
 
 
 def _stt_factory(sample_rate: int):
@@ -21,13 +25,17 @@ def _stt_factory(sample_rate: int):
         return WebsocketSTTStream(url, sample_rate)
     return GrpcSTTStream(sample_rate)
 
+
 def _now() -> float:
     return time.time()
+
 
 async def _send_json(ws: WebSocket, payload: dict):
     # pydantic 없이 바로 dict→json 문자열로 보내도 됨
     import json
+
     await ws.send_text(json.dumps(payload, ensure_ascii=False))
+
 
 @router.websocket("/ws")
 async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)):
@@ -39,31 +47,69 @@ async def transcribe_ws(ws: WebSocket, sr: int = Query(16000, ge=8000, le=48000)
     session: HybridPhishingSession = create_session(window_size=5)
 
     stt = _stt_factory(sr)
+
     recv_task = asyncio.create_task(_recv_audio(ws, stt))
     send_task = asyncio.create_task(_pump(ws, stt, session))
 
     try:
         await asyncio.gather(recv_task, send_task)
     except WebSocketDisconnect:
+        # 클라이언트가 끊은 경우
         pass
     finally:
-        await stt.close()
+        # STT 스트림 정리 (여기서만 close 호출하도록 통일)
+        try:
+            await stt.close()
+        except Exception:
+            # 이미 닫혀 있거나 에러가 나도 세션은 정리
+            pass
+
         session.reset()
+
         for t in (recv_task, send_task):
             if not t.done():
                 t.cancel()
 
+
 async def _recv_audio(ws: WebSocket, stt):
+    """
+    클라이언트에서 오는 PCM 바이너리 / 제어 메시지를 STT로 넘기는 루프.
+    - 바이너리: stt.feed(...)
+    - "__END__": STT 입력 종료 후 루프 종료
+    - disconnect: 루프 종료
+    """
     try:
         while True:
-            msg = await ws.receive()
-            if (b := msg.get("bytes")) is not None:
-                await stt.feed(b)
-            elif (t := msg.get("text")) is not None and t == "__END__":
-                await stt.close(force_grpc=False)
+            # 일부 Starlette 버전에서 disconnect 이후에 receive를 더 부르면
+            # RuntimeError('Cannot call "receive"...') 를 던지므로 방어
+            try:
+                msg = await ws.receive()
+            except RuntimeError:
+                # 이미 disconnect 메시지를 처리한 뒤 추가 receive 호출된 경우
                 break
+
+            msg_type = msg.get("type")
+
+            # 클라이언트가 연결을 끊은 경우 (ASGI 메시지 타입 기준)
+            if msg_type == "websocket.disconnect":
+                break
+
+            # 정상 수신 메시지
+            if msg_type == "websocket.receive":
+                if (b := msg.get("bytes")) is not None:
+                    # PCM 바이너리 → STT 입력
+                    await stt.feed(b)
+                elif (t := msg.get("text")) is not None:
+                    # 제어 텍스트 프레임 처리
+                    if t == "__END__":
+                        # STT 입력 종료 요청
+                        break
+
     except WebSocketDisconnect:
-        await stt.close(force_grpc=True)
+        # 다른 Starlette/FastAPI 버전에서는 여기로 들어올 수 있음
+        pass
+    # stt.close() 는 transcribe_ws 의 finally 에서 한 번만 호출
+
 
 async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
     """
@@ -82,7 +128,7 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
                 "kind": "partial" if not is_final else "final",
                 "text": text,
                 "immediate": fragment["immediate"],
-                "t": _now()
+                "t": _now(),
             }
             if fragment.get("chunk_immediate"):
                 payload["chunk_immediate"] = fragment["chunk_immediate"]
@@ -92,14 +138,18 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession):
 
             comprehensive = fragment.get("comprehensive")
             if comprehensive:
-                await _send_json(ws, {
-                    "kind": "risk",
-                    "text": text,
-                    "immediate": fragment["immediate"],
-                    "comprehensive": comprehensive,  # is_phishing/confidence 포함
-                    "t": _now(),
-                    "history": fragment.get("history")
-                })
+                await _send_json(
+                    ws,
+                    {
+                        "kind": "risk",
+                        "text": text,
+                        "immediate": fragment["immediate"],
+                        "comprehensive": comprehensive,  # is_phishing/confidence 포함
+                        "t": _now(),
+                        "history": fragment.get("history"),
+                    },
+                )
+
 
 @router.get("/ws-info")
 def ws_info():
@@ -108,5 +158,5 @@ def ws_info():
         "connect_to": f"{base}/api/transcribe/ws?sr=16000",
         "send": "PCM16LE mono 16kHz 바이너리(예: 200ms)",
         "end": "__END__ (text frame)",
-        "receive": "JSON: kind=partial/final/risk"
+        "receive": "JSON: kind=partial/final/risk",
     }
