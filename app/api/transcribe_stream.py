@@ -161,7 +161,11 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
     """
     try:
         async with stt:
+            logger.info(f"[STT START] client={client}")
+
             async for text, is_final in stt.transcripts():
+                logger.info(f"[STT TEXT] client={client} final={is_final} text={text!r}")
+
                 text = (text or "").strip()
                 if not text:
                     continue
