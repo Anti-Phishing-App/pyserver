@@ -1,4 +1,5 @@
 """FastAPI 메인 애플리케이션"""
+import logging
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, FileResponse
@@ -7,6 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from app.config import UPLOAD_DIR
 from app.api import upload, transcribe, document, auth, user, voice_phishing, phishing_site, sms, transcribe_stream
 from app.core.database import init_db
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 # FastAPI 앱 초기화
 app = FastAPI(title="PyServer API", version="1.0.0")
