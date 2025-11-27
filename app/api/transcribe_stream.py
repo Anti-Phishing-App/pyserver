@@ -135,6 +135,7 @@ async def _recv_audio(ws: WebSocket, stt):
             if msg_type == "websocket.receive":
                 if (b := msg.get("bytes")) is not None:
                     # PCM 바이너리 → STT 입력
+                    logger.info("recv bytes len=%s", len(b))
                     await stt.feed(b)
                 elif (t := msg.get("text")) is not None:
                     # 제어 텍스트 프레임 처리
@@ -161,7 +162,7 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
     """
     try:
         async with stt:
-            logger.info(f"[STT START] client={client}")
+            logger.info(f"[STT START] client=%s", client")
 
             async for text, is_final in stt.transcripts():
                 logger.info(f"[STT TEXT] client={client} final={is_final} text={text!r}")
@@ -204,6 +205,7 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
         logger.error(
             f"[STT RPC ERROR] client={client} code={getattr(code, 'name', code)} detail={detail}"
         )
+        logger.error("%s %s", e.code(), e.details())
         # 클라이언트(웹/앱)에게도 에러를 알려줌
         try:
             await _send_json(
