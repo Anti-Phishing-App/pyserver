@@ -39,19 +39,34 @@ async def transcribe_file_upload(
 
     headers = {"X-CLOVASPEECH-API-KEY": CLOVA_SECRET_KEY}
 
+    # 파일 크기 읽기
+    file_bytes = await media.read()
+    file_size_mb = len(file_bytes) / (1024 * 1024)
+
+    # 파일 크기 기준 자동 분기 로직 (1MB ≈ 30초)
+    if completion == "auto":
+        if file_size_mb <= 1:
+            completion = "sync"
+        else:
+            completion = "async"
+
     callback_url = "http://13.125.25.96:8000/api/transcribe/callback"
 
     params_dict = {
         "language": language,
         "completion": completion,
-        "callback": callback_url,
+        "callback": callback_url if completion == "async" else None,
         "wordAlignment": True,
         "fullText": True,
     }
+
+    # callback None일 경우 제거 (sync에는 callback 필요 없음)
+    params_dict = {k: v for k, v in params_dict.items() if v is not None}
+
     params_json = json.dumps(params_dict, ensure_ascii=False)
 
     files = {
-        "media": (media.filename, await media.read(), media.content_type),
+        "media": (media.filename, file_bytes, media.content_type),
         "params": (None, params_json, "application/json"),
     }
 
@@ -61,7 +76,7 @@ async def transcribe_file_upload(
         try:
             resp = await client.post(clova_url, headers=headers, files=files)
             resp.raise_for_status()
-            return resp.json()
+            return {"mode": completion, "response": resp.json()}
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=e.response.status_code,
                                 detail=f"CLOVA API Error: {e.response.text}")
@@ -79,17 +94,18 @@ async def clova_callback(request: Request):
             print("[CLOVA CALLBACK RECEIVED] (EMPTY BODY)")
             return {"status": "ok", "received": True, "empty": True}
 
+        # 2) 문자열 body 디코딩
         text_body = raw_body.decode("utf-8", errors="ignore").strip()
 
-        # 2) JSON인지 먼저 판단
+        # body가 텍스트 1~2자라도 들어있으면 JSON 검사
         try:
             payload = json.loads(text_body)
             print("[CLOVA CALLBACK RECEIVED] (JSON) =======================")
             print(payload)
             print("=================================================================")
-            return {"status": "ok", "received": True}
+            return {"status": "ok", "received": True, "json": True}
         except json.JSONDecodeError:
-            # 3) JSON 아님 = 텍스트 콜백
+            # JSON 아님 → 텍스트 콜백
             print("[CLOVA CALLBACK RECEIVED] (TEXT) =======================")
             print(text_body)
             print("=================================================================")
@@ -97,6 +113,8 @@ async def clova_callback(request: Request):
 
     except Exception as e:
         print(f"[Callback Parse Error] {e}")
+        # callback은 절대 실패하지 않아야 하므로 200을 보내는 게 안전하지만,
+        # 로그 확인 위해 500 유지 가능 → 원하면 200으로 바꿔줄 수 있음.
         raise HTTPException(500, f"Callback error: {e}")
 
 @router.get("/api/transcribe/status/{token}")
