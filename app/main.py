@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import UPLOAD_DIR
 from app.api import upload, transcribe, document, auth, user, voice_phishing, phishing_site, sms, transcribe_stream
 from app.core.database import init_db
+from app.api.logs import router as logs_router
 
 # 로깅 설정
 logging.basicConfig(
@@ -41,7 +42,7 @@ app.include_router(voice_phishing.router, tags=["Voice Phishing Detection"])
 app.include_router(phishing_site.router, tags=["Phishing Site Detection"])
 app.include_router(sms.router, tags=["SMS Phishing Detection"])
 app.include_router(transcribe_stream.router)
-
+app.include_router(logs_router)
 
 # =========================
 # 루트 및 기본 엔드포인트
