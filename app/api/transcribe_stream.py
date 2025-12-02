@@ -20,6 +20,8 @@ from app.services.stt_adapter import WebsocketSTTStream, GrpcSTTStream
 # gRPC STT 에러 잡기용
 from grpc.aio import AioRpcError
 
+import numpy as np  # 🔴 추가: 볼륨 계산을 위한 numpy 추가
+
 router = APIRouter(prefix="/api/transcribe", tags=["Transcribe (Realtime)"])
 
 logger = logging.getLogger("transcribe_stream")
@@ -48,6 +50,20 @@ async def _send_json(ws: WebSocket, payload: dict):
     if payload.get("kind") in {"partial", "final", "risk", "error", "state"}:
         logger.debug(f"[WS->CLIENT] {data}")
     await ws.send_text(data)
+
+
+# 🔴 추가: PCM16 볼륨 계산 함수
+def calculate_volume(pcm_bytes: bytes) -> float:
+    """
+    PCM16 mono 오디오 볼륨 계산 (0.0 ~ 1.0)
+    RMS 기반으로 계산하여 음성이 들어오는지 판단할 수 있게 한다
+    """
+    if len(pcm_bytes) < 2:
+        return 0.0
+
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    rms = np.sqrt(np.mean(samples * samples))
+    return min(rms / 32768.0, 1.0)
 
 
 @router.websocket("/ws")
@@ -135,13 +151,17 @@ async def _recv_audio(ws: WebSocket, stt):
             if msg_type == "websocket.receive":
                 if (b := msg.get("bytes")) is not None:
                     # PCM 바이너리 → STT 입력
-                    logger.info("recv bytes len=%s", len(b))
+                    # 🔵 수정: 기존 len 출력 → 볼륨까지 함께 출력
+                    vol = calculate_volume(b)
+                    logger.info("recv bytes len=%s, volume=%.2f", len(b), vol)
+
                     await stt.feed(b)
+
                 elif (t := msg.get("text")) is not None:
                     # 제어 텍스트 프레임 처리
                     if t == "__END__":
                         logger.info('_recv_audio: "__END__" 수신 → STT close 후 종료')
-                        # 🔴 여기서 STT 종료 신호 보내기 (GrpcSTTStream.close가 audio_q에 None 넣어줌)
+                        # 🔴 STT 종료 신호 (audio_q에 None 넣어줌)
                         with contextlib.suppress(Exception):
                             await stt.close()
                         break
@@ -181,7 +201,7 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
                 if fragment.get("chunk_immediate"):
                     payload["chunk_immediate"] = fragment["chunk_immediate"]
                 if fragment.get("history"):
-                    payload["history"] = fragment["history"]
+                    payload["history"] = fragment.get("history")
                 await _send_json(ws, payload)
 
                 comprehensive = fragment.get("comprehensive")
@@ -206,7 +226,6 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
             f"[STT RPC ERROR] client={client} code={getattr(code, 'name', code)} detail={detail}"
         )
         logger.error("%s %s", e.code(), e.details())
-        # 클라이언트(웹/앱)에게도 에러를 알려줌
         try:
             await _send_json(
                 ws,
@@ -219,15 +238,12 @@ async def _pump(ws: WebSocket, stt, session: HybridPhishingSession, client: str)
                 },
             )
         except Exception:
-            # WS가 이미 끊겼을 수도 있음
             pass
 
     except WebSocketDisconnect:
-        # 클라이언트가 먼저 끊은 경우
         logger.info(f"_pump: WebSocketDisconnect (client={client})")
 
     except Exception as e:
-        # 기타 예외
         logger.exception(f"_pump: unexpected error (client={client})")
         try:
             await _send_json(
