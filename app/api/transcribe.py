@@ -226,7 +226,7 @@ async def websocket_transcribe_stream(websocket: WebSocket, lang: str = "ko-KR",
                                             "alert_type": "immediate",
                                             "text": text,
                                             "risk_level": result['immediate']['level'],
-                                            "risk_probability": result['immediate']['probability'],
+                                            "risk_probability": result['immediate']['score'],
                                             "phishing_type": result['immediate'].get('phishing_type'),
                                             "keywords": result['immediate'].get('keywords', [])
                                         })

@@ -153,8 +153,8 @@ async def detect_sms_phishing(request: SmsDetectRequest):
                             url_result = UrlAnalysisResult(
                                 url=url,
                                 risk_level=immediate_result["level"],
-                                risk_probability=immediate_result["probability"],
-                                suspicious_features=immediate_result.get("features", []),
+                                risk_probability=immediate_result["score"],
+                                suspicious_features=immediate_result.get("reasons", []),
                                 is_phishing_ml=comprehensive_result["is_phishing"],
                                 ml_confidence=comprehensive_result["confidence"],
                                 phishtank_matched=comprehensive_result.get("source") == "phishtank"
