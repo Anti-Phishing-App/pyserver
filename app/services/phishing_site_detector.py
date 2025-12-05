@@ -83,9 +83,25 @@ class PhishingSiteDetector:
         features['longest_words_raw'] = max((len(word) for word in url.split('/')), default=0)
         features['longest_word_path'] = max((len(word) for word in path), default=0)
 
-        # 피싱 힌트 키워드
-        hints = ['secure', 'account', 'update', 'verify', 'login', 'confirm', 'suspend', 'alert']
-        features['phish_hints'] = 1 if any(h in url.lower() for h in hints) else 0
+        # 피싱 힌트 키워드 (개수도 함께 반환)
+        hints = ['secure', 'account', 'update', 'verify', 'login', 'confirm', 'suspend', 'alert',
+                 'banking', 'wallet', 'password', 'auth', 'credential']
+        url_lower = url.lower()
+        matched_hints = [h for h in hints if h in url_lower]
+        features['phish_hints'] = 1 if matched_hints else 0
+        features['phish_hints_count'] = len(matched_hints)
+
+        # 단축 URL 탐지
+        shorteners = ['bit.ly', 'tinyurl.com', 't.co', 'goo.gl', 'ow.ly', 'short.link']
+        features['is_shortener'] = 1 if any(s in domain for s in shorteners) else 0
+
+        # 의심스러운 TLD
+        suspicious_tlds = ['.xyz', '.top', '.club', '.info', '.online', '.site', '.work']
+        features['suspicious_tld'] = 1 if any(domain.endswith(tld) for tld in suspicious_tlds) else 0
+
+        # 숫자로만 된 서브도메인 체크
+        subdomain_parts = domain.split('.')
+        features['numeric_subdomain'] = 1 if len(subdomain_parts) > 2 and subdomain_parts[0].isdigit() else 0
 
         return features, domain
 
@@ -136,40 +152,79 @@ class PhishingSiteDetector:
         score = 0
         reasons = []
 
-        if features['length_url'] > 100:
-            score += 15
-            reasons.append("긴 URL 길이")
-
+        # IP 주소 사용 (매우 위험)
         if features['ip'] == 1:
-            score += 25
+            score += 40
             reasons.append("IP 주소 사용")
 
-        if features['nb_dots'] > 4:
-            score += 10
-            reasons.append("과도한 '.' 문자")
-
+        # 피싱 의심 키워드 (개수별 가중치)
         if features['phish_hints'] == 1:
-            score += 20
-            reasons.append("피싱 의심 키워드 포함 (secure, login, verify 등)")
+            base_score = 30
+            keyword_count = features.get('phish_hints_count', 1)
+            additional_score = min((keyword_count - 1) * 10, 20)  # 최대 +20점
+            score += base_score + additional_score
+            if keyword_count > 1:
+                reasons.append(f"피싱 의심 키워드 {keyword_count}개 포함")
+            else:
+                reasons.append("피싱 의심 키워드 포함")
 
+        # 단축 URL (위험)
+        if features.get('is_shortener') == 1:
+            score += 25
+            reasons.append("단축 URL 사용")
+
+        # URL 길이
+        if features['length_url'] > 150:
+            score += 30
+            reasons.append("매우 긴 URL 길이 (150자 초과)")
+        elif features['length_url'] > 100:
+            score += 20
+            reasons.append("긴 URL 길이 (100자 초과)")
+
+        # 도메인에 하이픈 포함
         if features['prefix_suffix'] == 1:
-            score += 10
+            score += 15
             reasons.append("도메인에 하이픈(-) 포함")
 
+        # 의심스러운 TLD
+        if features.get('suspicious_tld') == 1:
+            score += 15
+            reasons.append("의심스러운 도메인 확장자 (.xyz, .top, .club 등)")
+
+        # 과도한 점 문자
+        if features['nb_dots'] > 4:
+            score += 15
+            reasons.append("과도한 '.' 문자")
+
+        # URL에 숫자 비율 높음
         if features['ratio_digits_url'] > 0.3:
-            score += 10
+            score += 15
             reasons.append("URL에 숫자 비율 높음")
 
+        # 숫자 서브도메인
+        if features.get('numeric_subdomain') == 1:
+            score += 20
+            reasons.append("숫자로만 된 서브도메인")
+
+        # 호스트에 매우 짧은 단어
         if features['shortest_word_host'] < 3:
-            score += 5
+            score += 10
             reasons.append("호스트에 매우 짧은 단어")
 
+        # 복합 위험 보너스 (여러 의심 요소가 겹칠 때)
+        if len(reasons) >= 5:
+            score += 25
+            reasons.append("복합 위험 요소 다수 탐지")
+        elif len(reasons) >= 3:
+            score += 15
+            reasons.append("복합 위험 요소 탐지")
+
         # 위험도 레벨 (0: 안전, 1: 의심, 2: 경고, 3: 위험)
-        if score >= 50:
+        if score >= 70:
             level = 3
-        elif score >= 30:
+        elif score >= 50:
             level = 2
-        elif score >= 15:
+        elif score >= 30:
             level = 1
         else:
             level = 0
