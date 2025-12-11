@@ -245,11 +245,33 @@ def get_me(current_user: User = Depends(get_current_user)):
 
 
 # ==========================================
+# 소셜 로그인 (공통)
+# ==========================================
+import secrets
+import urllib.parse
+
+# 주의: 이 임시 저장소는 프로덕션 환경에 적합하지 않습니다.
+# 동시성 문제 및 확장성 문제가 발생할 수 있습니다.
+# 프로덕션에서는 Redis, 데이터베이스 또는 JWT 기반의 state를 사용해야 합니다.
+_temp_state_storage = {}
+
+
+def generate_final_redirect_url(base_url: str, params: dict) -> str:
+    """최종 리디렉션 URL을 생성합니다."""
+    query_string = urllib.parse.urlencode(params)
+    return f"{base_url}?{query_string}"
+
+
+# ==========================================
 # 카카오 소셜 로그인
 # ==========================================
 import httpx
 from fastapi.responses import RedirectResponse
-from app.config import KAKAO_CLIENT_ID, KAKAO_REDIRECT_URI
+from app.config import (
+    KAKAO_CLIENT_ID,
+    KAKAO_REDIRECT_URI,
+    WEB_SUCCESS_REDIRECT_URL
+)
 
 KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
@@ -257,27 +279,39 @@ KAKAO_USER_INFO_URL = "https://kapi.kakao.com/v2/user/me"
 
 
 @router.get("/kakao/login", tags=["Authentication"])
-def kakao_login():
+def kakao_login(final_redirect_uri: str = None):
     """
     카카오 로그인 페이지로 리디렉션
+
+    Args:
+        final_redirect_uri: 로그인 성공 후 최종적으로 리디렉션할 클라이언트 측 URL.
+                            (예: 웹사이트의 특정 페이지, 앱의 딥링크)
+                            지정하지 않으면 웹 기본 성공 URL로 이동합니다.
     """
+    state = secrets.token_urlsafe(16)
+    # 최종 리디렉션 URI를 state와 함께 임시 저장
+    _temp_state_storage[state] = final_redirect_uri or WEB_SUCCESS_REDIRECT_URL
+
     redirect_url = (
         f"{KAKAO_AUTH_URL}?client_id={KAKAO_CLIENT_ID}"
-        f"&redirect_uri={KAKAO_REDIRECT_URI}&response_type=code&scope=account_email"
+        f"&redirect_uri={KAKAO_REDIRECT_URI}&response_type=code"
+        f"&scope=account_email&state={state}"
     )
     return RedirectResponse(url=redirect_url)
 
 
-@router.get("/kakao/callback", response_model=TokenResponse, tags=["Authentication"])
-async def kakao_callback(code: str, db: Session = Depends(get_db)):
+@router.get("/kakao/callback", tags=["Authentication"])
+async def kakao_callback(code: str, state: str, db: Session = Depends(get_db)):
     """
     카카오 로그인 콜백 처리
 
     카카오로부터 받은 인증 코드로 토큰을 받고, 사용자 정보를 조회하여
-    - 기존 사용자인 경우: 로그인 처리 후 JWT 토큰 발급
-    - 신규 사용자인 경우: 회원가입 후 JWT 토큰 발급
+    JWT 토큰을 발급한 뒤, 최종적으로 지정된 URL로 리디렉션합니다.
     """
-    # 1. 인증 코드로 액세스 토큰 받기
+    # 1. state 값으로 최종 리디렉션 URI 가져오기
+    final_redirect_uri = _temp_state_storage.pop(state, WEB_SUCCESS_REDIRECT_URL)
+
+    # 2. 인증 코드로 액세스 토큰 받기
     token_data = {
         "grant_type": "authorization_code",
         "client_id": KAKAO_CLIENT_ID,
@@ -286,71 +320,60 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
     }
     async with httpx.AsyncClient() as client:
         token_response = await client.post(KAKAO_TOKEN_URL, data=token_data)
-        token_response.raise_for_status()
+        if token_response.status_code != 200:
+            error_detail = token_response.json().get("error_description", "Failed to get token from Kakao.")
+            redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+            return RedirectResponse(url=redirect_url)
         kakao_token = token_response.json()
 
-    # 2. 사용자 정보 받기
+    # 3. 사용자 정보 받기
     headers = {"Authorization": f"Bearer {kakao_token['access_token']}"}
     async with httpx.AsyncClient() as client:
         user_info_response = await client.get(KAKAO_USER_INFO_URL, headers=headers)
-        user_info_response.raise_for_status()
+        if user_info_response.status_code != 200:
+            error_detail = "Failed to get user info from Kakao."
+            redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+            return RedirectResponse(url=redirect_url)
         user_info = user_info_response.json()
 
-    # 사용자 식별자
     social_id = str(user_info.get("id"))
-
-    # email (scope: account_email 필수)
     email = user_info.get("kakao_account", {}).get("email")
     if not email:
-        raise HTTPException(status_code=400, detail="Email permission is required.")
+        redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": "Email permission is required."})
+        return RedirectResponse(url=redirect_url)
 
-    # nickname (optional)
     nickname = (
             user_info.get("properties", {}).get("nickname")
             or user_info.get("kakao_account", {}).get("profile", {}).get("nickname")
             or "카카오사용자"
     )
 
-    # 3. 사용자 정보로 DB 조회 및 생성
+    # 4. 사용자 정보로 DB 조회 및 생성
     user = db.query(User).filter(User.social_id == social_id, User.provider == "kakao").first()
 
     requires_info = False
-
     if not user:
-        # 이메일로 기존 사용자 확인
         user = db.query(User).filter(User.email == email).first()
         if user:
-            # 기존 계정에 소셜 정보 연동 (다중 소셜 로그인 지원)
-            # 단, provider가 이미 설정되어 있으면 에러
             if user.provider and user.provider != "kakao":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"This email is already linked to {user.provider} login"
-                )
+                error_detail = f"This email is already linked to {user.provider} login"
+                redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+                return RedirectResponse(url=redirect_url)
             user.provider = "kakao"
             user.social_id = social_id
             db.commit()
         else:
-            # 신규 사용자 생성
-            new_user = User(
-                email=email,
-                full_name=nickname,
-                provider="kakao",
-                social_id=social_id,
-                is_active=True
-            )
+            new_user = User(email=email, full_name=nickname, provider="kakao", social_id=social_id, is_active=True)
             db.add(new_user)
             db.commit()
             db.refresh(new_user)
             user = new_user
-            # 전화번호가 없으면 추가 정보 입력 필요
             requires_info = True
 
-    # 기존 사용자도 전화번호가 없으면 추가 정보 필요
     if not user.phone:
         requires_info = True
 
-    # 4. JWT 토큰 발급
+    # 5. JWT 토큰 발급
     access_token = create_access_token(
         data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
@@ -364,19 +387,22 @@ async def kakao_callback(code: str, db: Session = Depends(get_db)):
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     )
 
-    return {
+    # 6. 최종 URI로 리디렉션
+    redirect_params = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "requires_additional_info": requires_info
+        "requires_additional_info": str(requires_info).lower()
     }
+    redirect_url = generate_final_redirect_url(final_redirect_uri, redirect_params)
+
+    return RedirectResponse(url=redirect_url)
 
 
 
 # ==========================================
 # 네이버 소셜 로그인
 # ==========================================
-import secrets
 from app.config import NAVER_CLIENT_ID, NAVER_CLIENT_SECRET, NAVER_REDIRECT_URI
 
 NAVER_AUTH_URL = "https://nid.naver.com/oauth2.0/authorize"
@@ -385,11 +411,14 @@ NAVER_USER_INFO_URL = "https://openapi.naver.com/v1/nid/me"
 
 
 @router.get("/naver/login", tags=["Authentication"])
-def naver_login():
+def naver_login(final_redirect_uri: str = None):
     """
     네이버 로그인 페이지로 리디렉션
     """
     state = secrets.token_urlsafe(16)
+    # 최종 리디렉션 URI를 state와 함께 임시 저장
+    _temp_state_storage[state] = final_redirect_uri or WEB_SUCCESS_REDIRECT_URL
+
     redirect_url = (
         f"{NAVER_AUTH_URL}?response_type=code&client_id={NAVER_CLIENT_ID}"
         f"&redirect_uri={NAVER_REDIRECT_URI}&state={state}"
@@ -397,12 +426,15 @@ def naver_login():
     return RedirectResponse(url=redirect_url)
 
 
-@router.get("/naver/callback", response_model=TokenResponse, tags=["Authentication"])
+@router.get("/naver/callback", tags=["Authentication"])
 async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
     """
     네이버 로그인 콜백 처리
     """
-    # 1. 인증 코드로 액세스 토큰 받기
+    # 1. state 값으로 최종 리디렉션 URI 가져오기
+    final_redirect_uri = _temp_state_storage.pop(state, WEB_SUCCESS_REDIRECT_URL)
+
+    # 2. 인증 코드로 액세스 토큰 받기
     token_data = {
         "grant_type": "authorization_code",
         "client_id": NAVER_CLIENT_ID,
@@ -412,22 +444,31 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
     }
     async with httpx.AsyncClient() as client:
         token_response = await client.post(NAVER_TOKEN_URL, data=token_data)
-        token_response.raise_for_status()
+        if token_response.status_code != 200:
+            error_detail = token_response.json().get("error_description", "Failed to get token from Naver.")
+            redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+            return RedirectResponse(url=redirect_url)
         naver_token = token_response.json()
 
-    # 2. 액세스 토큰으로 사용자 정보 받기
+    # 3. 액세스 토큰으로 사용자 정보 받기
     headers = {"Authorization": f"Bearer {naver_token['access_token']}"}
     async with httpx.AsyncClient() as client:
         user_info_response = await client.get(NAVER_USER_INFO_URL, headers=headers)
-        user_info_response.raise_for_status()
-        user_info = user_info_response.json()["response"]
+        if user_info_response.status_code != 200:
+            error_detail = "Failed to get user info from Naver."
+            redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+            return RedirectResponse(url=redirect_url)
+        user_info = user_info_response.json().get("response")
+        if not user_info:
+            error_detail = "Failed to parse user info from Naver."
+            redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+            return RedirectResponse(url=redirect_url)
 
-    social_id = user_info["id"]
-    email = user_info["email"]
-    nickname = user_info["name"]
-    # profile_image = user_info["profile_image"] # 프로필 사진, 필요 시 사용
+    social_id = user_info.get("id")
+    email = user_info.get("email")
+    nickname = user_info.get("name")
 
-    # 3. 사용자 정보로 DB 조회 및 생성
+    # 4. 사용자 정보로 DB 조회 및 생성
     user = db.query(User).filter(User.social_id == social_id, User.provider == "naver").first()
 
     requires_info = False
@@ -435,36 +476,25 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
     if not user:
         user = db.query(User).filter(User.email == email).first()
         if user:
-            # 기존 계정에 소셜 정보 연동 (다중 소셜 로그인 지원)
-            # 단, provider가 이미 설정되어 있으면 에러
             if user.provider and user.provider != "naver":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"This email is already linked to {user.provider} login"
-                )
+                error_detail = f"This email is already linked to {user.provider} login"
+                redirect_url = generate_final_redirect_url(final_redirect_uri, {"error": error_detail})
+                return RedirectResponse(url=redirect_url)
             user.provider = "naver"
             user.social_id = social_id
             db.commit()
         else:
-            new_user = User(
-                email=email,
-                full_name=nickname,
-                provider="naver",
-                social_id=social_id,
-                is_active=True
-            )
+            new_user = User(email=email, full_name=nickname, provider="naver", social_id=social_id, is_active=True)
             db.add(new_user)
             db.commit()
             db.refresh(new_user)
             user = new_user
-            # 전화번호가 없으면 추가 정보 입력 필요
             requires_info = True
 
-    # 기존 사용자도 전화번호가 없으면 추가 정보 필요
     if not user.phone:
         requires_info = True
 
-    # 4. JWT 토큰 발급
+    # 5. JWT 토큰 발급
     access_token = create_access_token(
         data={"sub": user.email},
         secret_key=JWT_SECRET_KEY,
@@ -478,10 +508,14 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
         expires_delta=timedelta(days=JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     )
 
-    return {
+    # 6. 최종 URI로 리디렉션
+    redirect_params = {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "requires_additional_info": requires_info
+        "requires_additional_info": str(requires_info).lower() # bool to string
     }
+    redirect_url = generate_final_redirect_url(final_redirect_uri, redirect_params)
+
+    return RedirectResponse(url=redirect_url)
 
