@@ -67,6 +67,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/users.db")
 KAKAO_CLIENT_ID = os.getenv("KAKAO_CLIENT_ID", "your-kakao-client-id")
 # 카카오 로그인 콜백 URL (카카오 개발자 센터에 등록된 리다이렉트 URI)
 KAKAO_REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI", "http://localhost:8000/auth/kakao/callback")
+# 카카오 로그인 콜백 URL (앱)
+KAKAO_APP_REDIRECT_URI = os.getenv("KAKAO_APP_REDIRECT_URI", "antiphishingapp://oauth/kakao/callback")
 
 
 # ==========================================
@@ -78,3 +80,12 @@ NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID", "your-naver-client-id")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "your-naver-client-secret")
 # 네이버 로그인 콜백 URL (네이버 개발자 센터에 등록된 리다이렉트 URI)
 NAVER_REDIRECT_URI = os.getenv("NAVER_REDIRECT_URI", "http://localhost:8000/auth/naver/callback")
+# 네이버 로그인 콜백 URL (앱)
+NAVER_APP_REDIRECT_URI = os.getenv("NAVER_APP_REDIRECT_URI", "antiphishingapp://oauth/naver/callback")
+
+
+# ==========================================
+# 소셜 로그인 성공 시 리디렉션 URL
+# ==========================================
+# 웹 프론트엔드에서 소셜 로그인 성공 시 이동할 기본 URL
+WEB_SUCCESS_REDIRECT_URL = os.getenv("WEB_SUCCESS_REDIRECT_URL", "http://localhost:3000/auth/success")
