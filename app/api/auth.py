@@ -224,13 +224,15 @@ KAKAO_USER_INFO_URL = "https://kapi.kakao.com/v2/user/me"
 
 
 @router.get("/kakao/login", tags=["Authentication"])
-def kakao_login(final_redirect_uri: str = None):
+def kakao_login(final_redirect_uri: str = None, force_reauth: bool = False):
     """
     카카오 로그인 페이지로 리디렉션
 
-    - 앱 재실행 자동로그인(=refresh) 흐름 방해하지 않도록 prompt 강제옵션 없음
+    - 기본(force_reauth=False): 자동로그인 흐름 방해 X (기존 세션 있으면 바로 통과 가능)
+    - 재설치/계정전환(force_reauth=True): 계정 선택 화면 유도(prompt=select_account)
     - 닉네임 받기 위해 profile_nickname scope 추가
     """
+    
     state = secrets.token_urlsafe(16)
     _temp_state_storage[state] = final_redirect_uri or WEB_SUCCESS_REDIRECT_URL
 
@@ -239,6 +241,11 @@ def kakao_login(final_redirect_uri: str = None):
         f"&redirect_uri={KAKAO_REDIRECT_URI}&response_type=code"
         f"&scope=account_email,profile_nickname&state={state}"
     )
+
+    if force_reauth:
+        # 계정 전환 UX: select_account 
+        redirect_url += "&prompt=select_account"
+
     return RedirectResponse(url=redirect_url)
 
 
@@ -298,7 +305,6 @@ async def kakao_callback(code: str, state: str, db: Session = Depends(get_db)):
             user.provider = "kakao"
             user.social_id = social_id
 
-            # 기존 계정에 카카오 연결되는 경우에도 placeholder면 nickname 업데이트
             if (not user.full_name) or (user.full_name == "카카오사용자"):
                 if nickname and nickname != "카카오사용자":
                     user.full_name = nickname
@@ -319,7 +325,6 @@ async def kakao_callback(code: str, state: str, db: Session = Depends(get_db)):
             user = new_user
             requires_info = True
     else:
-        # 이미 카카오 유저여도 placeholder면 nickname으로 갱신
         if (not user.full_name) or (user.full_name == "카카오사용자"):
             if nickname and nickname != "카카오사용자":
                 user.full_name = nickname
@@ -347,7 +352,6 @@ async def kakao_callback(code: str, state: str, db: Session = Depends(get_db)):
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "requires_additional_info": str(requires_info).lower(),
-        # 앱에서 바로 닉네임 표시 가능하도록 추가
         "nickname": user.full_name or nickname,
         "provider": "kakao",
         "email": user.email
@@ -368,12 +372,14 @@ NAVER_USER_INFO_URL = "https://openapi.naver.com/v1/nid/me"
 
 
 @router.get("/naver/login", tags=["Authentication"])
-def naver_login(final_redirect_uri: str = None):
+def naver_login(final_redirect_uri: str = None, force_reauth: bool = False):
     """
     네이버 로그인 페이지로 리디렉션
 
-    - 앱 재실행 자동로그인(=refresh) 흐름 방해하지 않도록 강제 재인증 옵션 없음
+    - 기본(force_reauth=False): 자동로그인 흐름 방해 X (기존 세션 있으면 바로 통과 가능)
+    - 재설치/계정전환(force_reauth=True): auth_type=reauthenticate 로 재인증 강제
     """
+    
     state = secrets.token_urlsafe(16)
     _temp_state_storage[state] = final_redirect_uri or WEB_SUCCESS_REDIRECT_URL
 
@@ -381,6 +387,10 @@ def naver_login(final_redirect_uri: str = None):
         f"{NAVER_AUTH_URL}?response_type=code&client_id={NAVER_CLIENT_ID}"
         f"&redirect_uri={NAVER_REDIRECT_URI}&state={state}"
     )
+
+    if force_reauth:
+        redirect_url += "&auth_type=reauthenticate"
+
     return RedirectResponse(url=redirect_url)
 
 
@@ -438,7 +448,6 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
             user.provider = "naver"
             user.social_id = social_id
 
-            # 기존 계정에 네이버 연결되는 경우에도 placeholder면 nickname 업데이트
             if (not user.full_name) or (user.full_name == "네이버사용자"):
                 if nickname and nickname != "네이버사용자":
                     user.full_name = nickname
@@ -459,7 +468,6 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
             user = new_user
             requires_info = True
     else:
-        # 이미 네이버 유저여도 placeholder면 nickname으로 갱신
         if (not user.full_name) or (user.full_name == "네이버사용자"):
             if nickname and nickname != "네이버사용자":
                 user.full_name = nickname
@@ -487,7 +495,6 @@ async def naver_callback(code: str, state: str, db: Session = Depends(get_db)):
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "requires_additional_info": str(requires_info).lower(),
-        # 앱에서 바로 닉네임 표시 가능하도록 추가
         "nickname": user.full_name or nickname,
         "provider": "naver",
         "email": user.email
