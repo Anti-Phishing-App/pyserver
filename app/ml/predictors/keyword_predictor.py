@@ -22,37 +22,45 @@ KEYWORD_SCORES = {
 
 def detect_keywords(ocr_result: dict):
     try:
-
         found_details = []
         found_unique_keywords = set()
         total_score = 0.0
 
+        # ✅ OCR 통계(문서 판별용)
+        ocr_field_count = 0
+        ocr_text_len = 0
+
         # OCR 결과에서 텍스트 순회하며 키워드 검출
         for image in ocr_result.get("images", []):
             for field in image.get("fields", []):
-                text = field.get("inferText", "")
+                text = (field.get("inferText", "") or "").strip()
+
+                # 통계 누적
+                if text:
+                    ocr_field_count += 1
+                    ocr_text_len += len(text)
+
+                # 키워드 탐지
                 for kw, score in KEYWORD_SCORES.items():
-                    if kw in text and kw not in found_unique_keywords:
+                    if text and kw in text and kw not in found_unique_keywords:
                         found_details.append({"keyword": kw, "full_text": text, "score": score})
                         found_unique_keywords.add(kw)
                         total_score += score
-    
-        # 총점에 따라 위험도 결정
+
         total_score = min(total_score, 1.0)
 
-        if not found_details:
-            return {
-                "error": False,
-                "total_score": 0,
-                "details": []
-            }
-        
-        # 딕셔너리 형태로 최종 결과 반환
+        # 문서 판별
+        # TODO : threshold는 운영하면서 튜닝
+        is_document = (ocr_field_count > 0 and ocr_text_len >= 15)
+
+        # 결과 반환
+        # ocr field count 및 text len은 인식된 텍스트 조각 수 & 전체 텍스트 길이이므로 굳이 최종 결과에 반환 안함 (문서인지 아닌지 확인 위한 변수)
         return {
             "error": False,
-            "total_score": round(total_score, 2), # 소수점 둘째 자리까지 반올림
-            "details": found_details
+            "total_score": round(total_score, 2),
+            "details": found_details,
+            "is_document": is_document
         }
-    
+
     except Exception as e:
-        return {"error": True, "message": str(e)}
+        return {"error": True, "message": str(e), "ocr_field_count": 0, "ocr_text_len": 0, "is_document": False}
