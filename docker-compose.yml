@@ -1,0 +1,13 @@
+services:
+  phishing-api:
+    build: .
+    container_name: phishing-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - /home/ubuntu/opt/apps/phishing-api/db/users.db:/app/users.db
+    environment:
+      - CLOVA_API_URL=https://ihyjtxklw0.apigw.ntruss.com/custom/v1/49889/7dfdf665bffa8f65b8fd2dc636eedcf615ed34f95720fac1bcf00e5557d1aa03/general
+      - CLOVA_SECRET_KEY2=eklvd3hiS2VYcnpuSU56ZWFDRVlWTVRGYmtvQnZSdnY=
+      # config.py 용 CLOVA_URL 및 KEY 추가 필요
+    restart: always
