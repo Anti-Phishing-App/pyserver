@@ -89,3 +89,8 @@ NAVER_APP_REDIRECT_URI = os.getenv("NAVER_APP_REDIRECT_URI", "antiphishingapp://
 # ==========================================
 # 웹 프론트엔드에서 소셜 로그인 성공 시 이동할 기본 URL
 WEB_SUCCESS_REDIRECT_URL = os.getenv("WEB_SUCCESS_REDIRECT_URL", "https://gupi99.p-e.kr/")
+
+# ==========================================
+# AI 서버 게이트웨이 설정
+# ==========================================
+AI_SERVER_BASE_URL = os.getenv("AI_SERVER_BASE_URL", "http://ai_server:8001")

@@ -15,7 +15,7 @@ services:
       - ./api_server/data:/app/data
     environment:
       - DATABASE_URL=sqlite:///./sql_app.db
-      - AI_SERVER_URL=http://ai_server:8001/analyze/document
+      - AI_SERVER_BASE_URL=http://ai_server:8001
     restart: always
     networks:
       - phishing_network

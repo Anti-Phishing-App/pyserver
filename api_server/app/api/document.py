@@ -1,13 +1,13 @@
 """수정된 문서 분석 API (api_server/app/api/document.py)"""
 from fastapi import APIRouter, UploadFile, File, HTTPException
 import requests  # AI 서버에 요청을 보내기 위해 필요합니다.
-from app.config import UPLOAD_DIR
+from app.config import UPLOAD_DIR, AI_SERVER_BASE_URL
 from app.utils.file_handler import save_upload_file
 
 router = APIRouter()
 
-# AI 서버의 주소 (도커 컴포즈 서비스 이름인 ai_server를 사용합니다)
-AI_SERVER_URL = "http://ai_server:8001/analyze/document"
+# AI 서버 주소는 환경변수로 주입합니다.
+AI_SERVER_URL = f"{AI_SERVER_BASE_URL.rstrip('/')}/analyze/document"
 
 @router.post("/process-request")
 async def process_request(file: UploadFile = File(...)):

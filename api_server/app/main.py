@@ -6,8 +6,8 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import UPLOAD_DIR
-# AI 서버로 토스할 라우터들을 포함합니다.
-from app.api import upload, transcribe, document, auth, user, voice_phishing, phishing_site, sms, transcribe_stream
+# API 서버는 인증/유저/업로드/게이트웨이 성격의 라우터만 포함합니다.
+from app.api import upload, document, auth, user
 from app.core.database import init_db
 from app.api.logs import router as logs_router
 
@@ -35,11 +35,6 @@ app.include_router(auth.router, tags=["Authentication"])      # 로그인 담당
 app.include_router(user.router, tags=["User Management"])    # 유저 담당
 app.include_router(upload.router, tags=["Upload"])           # 파일 받기 담당
 app.include_router(document.router, tags=["Document"])       # 분석 요청 전달 담당
-app.include_router(transcribe.router, tags=["Transcribe"])
-app.include_router(voice_phishing.router, tags=["Voice Phishing Detection"])
-app.include_router(phishing_site.router, tags=["Phishing Site Detection"])
-app.include_router(sms.router, tags=["SMS Phishing Detection"])
-app.include_router(transcribe_stream.router)
 app.include_router(logs_router)
 
 @app.get("/")

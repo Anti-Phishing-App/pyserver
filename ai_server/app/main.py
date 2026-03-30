@@ -1,12 +1,10 @@
-"""무거운 AI 분석 전용 서버 (ai_server/app/main.py)"""
 import logging
 from fastapi import FastAPI, UploadFile, File, HTTPException
 import shutil
 import os
 
-# 실제 AI 분석 로직만 가져옵니다.
 from app.services.document_service import analyze_document
-# 필요한 경우 transcribe 로직도 여기서 호출합니다.
+from app.api import voice_phishing, phishing_site, sms, transcribe, transcribe_stream
 
 # 로깅 설정 (AI 서버용)
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +36,13 @@ def analyze_doc_task(file: UploadFile = File(...)):
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
+
+# AI 연산 라우터는 AI 서버에서 직접 제공
+app.include_router(transcribe.router, tags=["Transcribe"])
+app.include_router(transcribe_stream.router)
+app.include_router(voice_phishing.router, tags=["Voice Phishing Detection"])
+app.include_router(phishing_site.router, tags=["Phishing Site Detection"])
+app.include_router(sms.router, tags=["SMS Phishing Detection"])
 
 @app.get("/healthz")
 def healthz():
