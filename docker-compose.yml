@@ -1,40 +1,13 @@
-version: '3.8'
-
 services:
-  # 1️⃣ 카운터 (API 서버)
-  api_server:
-    build:
-      context: ./api_server
-      dockerfile: Dockerfile
-    container_name: api_server
+  phishing-api:
+    build: .
+    container_name: phishing-api
     ports:
-      - "8000:8000"  # 외부에서 8000번으로 접속하면 카운터로 연결
+      - "8000:8000"
     volumes:
-      - ./api_server:/app
-      - ./api_server/uploads:/app/uploads
-      - ./api_server/data:/app/data
+      - /home/ubuntu/opt/apps/phishing-api/db/users.db:/app/users.db
     environment:
-      - DATABASE_URL=sqlite:///./sql_app.db
-      - AI_SERVER_URL=http://ai_server:8001/analyze/document
+      - CLOVA_API_URL=https://ihyjtxklw0.apigw.ntruss.com/custom/v1/49889/7dfdf665bffa8f65b8fd2dc636eedcf615ed34f95720fac1bcf00e5557d1aa03/general
+      - CLOVA_SECRET_KEY2=eklvd3hiS2VYcnpuSU56ZWFDRVlWTVRGYmtvQnZSdnY=
+      # config.py 용 CLOVA_URL 및 KEY 추가 필요
     restart: always
-    networks:
-      - phishing_network
-
-  # 2️⃣ 주방 (AI 서버)
-  ai_server:
-    build:
-      context: ./ai_server
-      dockerfile: Dockerfile
-    container_name: ai_server
-    ports:
-      - "8001:8001"  # 외부에서 8001번으로 접속하면 주방으로 연결
-    volumes:
-      - ./ai_server:/app
-      - ./ai_server/data:/app/data
-    restart: always
-    networks:
-      - phishing_network
-
-networks:
-  phishing_network:
-    driver: bridge
