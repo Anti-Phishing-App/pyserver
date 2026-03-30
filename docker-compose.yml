@@ -1,13 +1,31 @@
+version: '3.8'
+
 services:
-  phishing-api:
-    build: .
+  # 1. 카운터 알바생 (API 서버 - 로그인, DB 담당)
+  api:
+    build: 
+      context: ./api_server
     container_name: phishing-api
     ports:
       - "8000:8000"
+    depends_on:
+      - ai
     volumes:
+      # 기존에 있던 DB 유지 설정을 그대로 가져옵니다! (API 서버가 DB를 쓰니까요)
       - /home/ubuntu/opt/apps/phishing-api/db/users.db:/app/users.db
     environment:
+      - AI_SERVER_URL=http://ai:8000  # AI 주방으로 넘길 주소
+    restart: always
+
+  # 2. 주방 알바생 (AI 서버 - 문서 분석, 음성 CLOVA 담당)
+  ai:
+    build: 
+      context: ./ai_server
+    container_name: phishing-ai
+    expose:
+      - "8000"
+    environment:
+      # 기존에 있던 CLOVA 환경변수들은 AI 분석 서버가 가져갑니다!
       - CLOVA_API_URL=https://ihyjtxklw0.apigw.ntruss.com/custom/v1/49889/7dfdf665bffa8f65b8fd2dc636eedcf615ed34f95720fac1bcf00e5557d1aa03/general
       - CLOVA_SECRET_KEY2=eklvd3hiS2VYcnpuSU56ZWFDRVlWTVRGYmtvQnZSdnY=
-      # config.py 용 CLOVA_URL 및 KEY 추가 필요
     restart: always
