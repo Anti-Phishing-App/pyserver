@@ -1,0 +1,76 @@
+"""카운터 전용 FastAPI 메인 애플리케이션 (api_server/app/main.py)"""
+import logging
+from pathlib import Path
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.config import UPLOAD_DIR
+from app.api import upload, transcribe, document, auth, user, voice_phishing, phishing_site, sms, transcribe_stream
+from app.core.database import init_db
+from app.api.logs import router as logs_router
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# FastAPI 앱 초기화 (API 전용)
+app = FastAPI(title="PyServer API (Frontend)", version="1.0.0")
+
+# 애플리케이션 시작 시 DB 초기화 (카운터는 DB를 담당하니까 필수!)
+@app.on_event("startup")
+def on_startup():
+    """애플리케이션 시작 시 데이터베이스 초기화"""
+    init_db()
+
+# 정적 파일 마운트 (사진이나 HTML은 카운터에서 보여줍니다)
+app.mount("/static", StaticFiles(directory="."), name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+# API 라우터 등록
+app.include_router(auth.router, tags=["Authentication"])
+app.include_router(user.router, tags=["User Management"])
+app.include_router(upload.router, tags=["Upload"])
+app.include_router(transcribe.router, tags=["Transcribe"])
+app.include_router(document.router, tags=["Document"])  # <- 여기서 이제 AI 서버로 토스하죠!
+app.include_router(voice_phishing.router, tags=["Voice Phishing Detection"])
+app.include_router(phishing_site.router, tags=["Phishing Site Detection"])
+app.include_router(sms.router, tags=["SMS Phishing Detection"])
+app.include_router(transcribe_stream.router)
+app.include_router(logs_router)
+
+# =========================
+# 루트 및 기본 엔드포인트
+# =========================
+@app.get("/")
+def read_root():
+    """루트 접근 시 index.html 반환"""
+    index_path = Path("index.html")
+    if index_path.exists():
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
+
+    fallback = """
+    <!doctype html>
+    <html lang="ko"><head><meta charset="utf-8">
+    <title>Server Running</title></head>
+    <body style="font-family:sans-serif">
+      <h1>FastAPI 서버가 실행 중입니다. (API Server)</h1>
+    </body></html>
+    """
+    return HTMLResponse(fallback)
+
+@app.get("/favicon.ico")
+def favicon():
+    """favicon 404 소음 방지"""
+    fav = Path("favicon.ico")
+    if fav.exists():
+        return FileResponse(str(fav))
+    return HTMLResponse(status_code=204, content="")
+
+@app.get("/healthz")
+def healthz():
+    """Health check"""
+    return {"status": "ok", "service": "api_server"}
